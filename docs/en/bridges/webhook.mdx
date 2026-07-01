@@ -18,13 +18,18 @@ Content-Type: application/json
   "user_id": "external-user-id",
   "username": "John Doe",
   "text": "Hello from external system",
-  "message_id": "msg-123"
+  "message_id": "msg-123",
+  "media_type": "photo",
+  "file_id": "external-file-id",
+  "file_name": "image.png"
 }
 ```
 
+`text` can be empty when `media_type` and `file_id` are set. Supported `media_type` values: `photo`, `document`, `sticker`, `video`, `audio`, `voice`, `animation`.
+
 ## Outgoing Messages
 
-When the bot sends a reply, BotMux forwards it to the configured **Callback URL** via HTTP POST.
+When the bot sends a reply, BotMux forwards it to the configured **Callback URL** via HTTP POST. Outgoing payloads include `media_type`, `file_id`, and `file_name` when the bot sent media (via management API or `/tgapi/` capture).
 
 ## Setup
 

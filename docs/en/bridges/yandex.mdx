@@ -1,0 +1,91 @@
+---
+title: "Yandex Messenger Bridge"
+description: "Native Yandex Messenger integration via Bot API webhooks"
+---
+
+BotMux provides native [Yandex Messenger](https://yandex.ru/support/messenger/) bridge support using the [ymsdk](https://github.com/rekurt/ymsdk) Go client.
+
+## Setup
+
+### 1. Create a Yandex Messenger bot
+
+Create a bot in the Yandex Messenger admin panel and obtain an **OAuth bot token**.
+
+### 2. Create a bridge in BotMux
+
+1. Select a bot → **Bridges** → **Add Bridge**
+2. Set **Protocol** to `Yandex Messenger`
+3. Fill in:
+   - **Bot Token** — OAuth token from Yandex
+   - **Webhook Secret** — shared secret for the `X-Webhook-Secret` header (recommended)
+4. Enable and save
+5. Copy the **Incoming URL**: `https://your-botmux-host/bridge/{id}/incoming`
+
+### 3. Register the webhook URL
+
+Point Yandex Messenger at BotMux using the Bot API `self.update` method:
+
+```bash
+curl -X POST "https://botapi.messenger.yandex.net/bot/v1/self/update/" \
+  -H "Authorization: OAuth YOUR_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"webhook_url":"https://your-botmux-host/bridge/{id}/incoming"}'
+```
+
+Use the same **Webhook Secret** value in your bridge config. Yandex will send it in the `X-Webhook-Secret` header on every update.
+
+<Warning>
+HTTPS is required for production webhook URLs.
+</Warning>
+
+## Message flow
+
+```
+Yandex Messenger chat          BotMux                         Telegram
+    │                              │                               │
+    │  webhook update              │                               │
+    ├─────────────────────────────►│  translate to Telegram Update  │
+    │                              ├──────────────────────────────►│
+    │                              │◄──────────────────────────────┤  bot reply
+    │  sendText / sendImage / …    │                               │
+    │◄─────────────────────────────┤  via ymsdk                    │
+```
+
+## Supported content
+
+| Direction | Type | Notes |
+|-----------|------|-------|
+| Incoming | Text | Plain text messages |
+| Incoming | Image | Single image with optional caption |
+| Incoming | Gallery | First image synced; count noted in caption if multiple |
+| Incoming | File | Documents and attachments |
+| Incoming | Sticker | Sticker ID + emoji fallback |
+| Incoming | Button press | `bot_request.server_action` → `[button:name] payload` text |
+| Outgoing | Text | Via `sendText` |
+| Outgoing | Photo / sticker / animation | Downloaded from Telegram, sent via `sendImage` or `sendGallery` (with caption) |
+| Outgoing | Video / audio / voice / document | Sent via `sendFile` |
+| Outgoing | Inline keyboard | Telegram `inline_keyboard` → Yandex `suggest_buttons` (URL and callback buttons) |
+
+## Media in the web UI
+
+Incoming Yandex media is stored with a bridge-encoded `file_id` (`bridge:{id}:{ym_file_id}`). The standard `/api/media?bot_id=&file_id=` endpoint proxies these files from Yandex Messenger automatically.
+
+Outgoing media from bots using the `/tgapi/` proxy is captured and forwarded to Yandex (file is downloaded from Telegram first).
+
+## Security
+
+When **Webhook Secret** is configured, every incoming request must include a matching `X-Webhook-Secret` header (constant-time comparison). Requests without a valid secret are rejected with HTTP 401.
+
+## Config reference
+
+Stored in the bridge **Config** JSON field:
+
+```json
+{
+  "bot_token": "OAuth-token",
+  "webhook_secret": "your-shared-secret",
+  "api_base_url": "https://botapi.messenger.yandex.net"
+}
+```
+
+`api_base_url` is optional and used for testing with a mock API server.

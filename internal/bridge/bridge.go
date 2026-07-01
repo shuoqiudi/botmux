@@ -94,8 +94,8 @@ func (bm *Manager) HandleIncoming(bridgeID int64, msg models.BridgeIncomingMessa
 		return fmt.Errorf("bridge %d not active", bridgeID)
 	}
 
-	if msg.Text == "" {
-		return fmt.Errorf("empty message text")
+	if msg.Text == "" && msg.MediaType == "" {
+		return fmt.Errorf("empty message")
 	}
 
 	// Resolve or create Telegram chat mapping
@@ -131,6 +131,8 @@ func (bm *Manager) HandleIncoming(bridgeID int64, msg models.BridgeIncomingMessa
 		},
 	}
 
+	applyMediaToSyntheticMessage(update["message"].(map[string]any), msg, bridgeID)
+
 	// Add reply context if available
 	if msg.ReplyToMsgID != "" {
 		if mapping, err := bm.store.GetBridgeMsgMapping(bridgeID, msg.ReplyToMsgID); err == nil && mapping != nil {
@@ -161,8 +163,28 @@ func (bm *Manager) HandleIncoming(bridgeID int64, msg models.BridgeIncomingMessa
 	return nil
 }
 
-// NotifyOutgoing sends an outgoing bot message to the appropriate bridge callback
+// NotifyOutgoing sends an outgoing bot message to the appropriate bridge callback.
+// When telegramMsgID is set, media fields are loaded from the stored message if present.
 func (bm *Manager) NotifyOutgoing(botID int64, chatID int64, text string, telegramMsgID int, replyToMsgID int) {
+	bm.notifyOutgoing(botID, chatID, text, telegramMsgID, replyToMsgID, nil)
+}
+
+// NotifyOutgoingWithButtons is like NotifyOutgoing but attaches Yandex SuggestButtons when supported.
+func (bm *Manager) NotifyOutgoingWithButtons(botID int64, chatID int64, text string, telegramMsgID int, replyToMsgID int, buttons any) {
+	bm.notifyOutgoing(botID, chatID, text, telegramMsgID, replyToMsgID, buttons)
+}
+
+func (bm *Manager) notifyOutgoing(botID int64, chatID int64, text string, telegramMsgID int, replyToMsgID int, yandexButtons any) {
+	mediaType, fileID, fileName := "", "", ""
+	if telegramMsgID != 0 {
+		if m, err := bm.store.GetMessage(botID, chatID, telegramMsgID); err == nil && m != nil {
+			if text == "" {
+				text = m.Text
+			}
+			mediaType, fileID, fileName = m.MediaType, m.FileID, ""
+		}
+	}
+
 	bm.mu.RLock()
 	defer bm.mu.RUnlock()
 
@@ -171,19 +193,21 @@ func (bm *Manager) NotifyOutgoing(botID int64, chatID int64, text string, telegr
 			continue
 		}
 
-		// Check if this chat belongs to this bridge
 		extChatID, err := bm.store.GetBridgeChatMappingReverse(cfg.ID, chatID)
 		if err != nil || extChatID == "" {
 			continue
 		}
 
-		// Slack bridges: send directly via Slack API
 		if IsSlackBridge(cfg) {
 			go bm.notifySlackOutgoing(cfg, extChatID, text, replyToMsgID)
 			continue
 		}
 
-		// Generic webhook bridges: POST to callback URL
+		if IsYandexBridge(cfg) {
+			go bm.notifyYandexOutgoing(cfg, botID, extChatID, text, mediaType, fileID, fileName, replyToMsgID, yandexButtons)
+			continue
+		}
+
 		if cfg.CallbackURL == "" {
 			continue
 		}
@@ -193,9 +217,11 @@ func (bm *Manager) NotifyOutgoing(botID int64, chatID int64, text string, telegr
 			ExternalChatID: extChatID,
 			Text:           text,
 			TelegramMsgID:  telegramMsgID,
+			MediaType:      mediaType,
+			FileID:         fileID,
+			FileName:       fileName,
 		}
 
-		// Map reply-to back to external message ID
 		if replyToMsgID != 0 {
 			if extMsgID, err := bm.store.GetBridgeMsgMappingReverse(cfg.ID, replyToMsgID); err == nil && extMsgID != "" {
 				outMsg.ReplyToExtID = extMsgID

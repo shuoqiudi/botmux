@@ -25,6 +25,7 @@ type e2eHarness struct {
 	t       *testing.T
 	fake    *fakeTG          // always present — fake Telegram HTTP server
 	fakeSlk *httptest.Server // only when withFakeSlack() opt is applied
+	fakeYM  *httptest.Server // only when withFakeYandexReal() opt is applied
 	fakeLLM *httptest.Server // only when withFakeLLM() opt is applied
 	store   *store.Store
 	proxy   *proxy.Manager

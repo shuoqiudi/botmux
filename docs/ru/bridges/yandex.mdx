@@ -1,0 +1,74 @@
+---
+title: "Мост Яндекс Мессенджера"
+description: "Нативная интеграция с Яндекс Мессенджером через Bot API webhooks"
+---
+
+BotMux поддерживает нативный мост в [Яндекс Мессенджер](https://yandex.ru/support/messenger/) через Go-клиент [ymsdk](https://github.com/rekurt/ymsdk).
+
+## Настройка
+
+### 1. Создайте бота в Яндекс Мессенджере
+
+Создайте бота в админ-панели и получите **OAuth-токен**.
+
+### 2. Создайте мост в BotMux
+
+1. Выберите бота → **Bridges** → **Add Bridge**
+2. Протокол: **Yandex Messenger** / **Яндекс Мессенджер**
+3. Заполните:
+   - **Bot Token** — OAuth-токен
+   - **Webhook Secret** — общий секрет для заголовка `X-Webhook-Secret` (рекомендуется)
+4. Включите и сохраните
+5. Скопируйте **Incoming URL**: `https://your-botmux-host/bridge/{id}/incoming`
+
+### 3. Зарегистрируйте webhook URL
+
+```bash
+curl -X POST "https://botapi.messenger.yandex.net/bot/v1/self/update/" \
+  -H "Authorization: OAuth YOUR_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"webhook_url":"https://your-botmux-host/bridge/{id}/incoming"}'
+```
+
+Используйте тот же **Webhook Secret**, что указан в конфиге моста.
+
+<Warning>
+Для production webhook URL нужен HTTPS.
+</Warning>
+
+## Поддерживаемый контент
+
+| Направление | Тип | Примечание |
+|-------------|-----|------------|
+| Входящие | Текст | Обычные сообщения |
+| Входящие | Изображение | С подписью |
+| Входящие | Галерея | Синхронизируется первое фото; счётчик в подписи |
+| Входящие | Файл | Документы и вложения |
+| Входящие | Стикер | ID стикера + emoji |
+| Входящие | Кнопка | `bot_request.server_action` → текст `[button:name]` |
+| Исходящие | Текст | `sendText` |
+| Исходящие | Фото / стикер / GIF | Через `sendImage` / `sendGallery` |
+| Исходящие | Видео / аудио / документ | Через `sendFile` |
+| Исходящие | Inline-клавиатура | Telegram `inline_keyboard` → Yandex `suggest_buttons` |
+
+## Медиа в веб-интерфейсе
+
+Входящие файлы хранятся с `file_id` вида `bridge:{id}:{ym_file_id}`. Эндпоинт `/api/media?bot_id=&file_id=` проксирует их из API Яндекс Мессенджера.
+
+Исходящие медиа ботов через `/tgapi/` перехватываются и отправляются в YM (файл сначала скачивается из Telegram).
+
+## Безопасность
+
+При настроенном **Webhook Secret** каждый запрос должен содержать заголовок `X-Webhook-Secret` с совпадающим значением. Иначе — HTTP 401.
+
+## Конфиг
+
+```json
+{
+  "bot_token": "OAuth-token",
+  "webhook_secret": "your-shared-secret",
+  "api_base_url": "https://botapi.messenger.yandex.net"
+}
+```
+
+`api_base_url` опционален (для тестов с mock API).

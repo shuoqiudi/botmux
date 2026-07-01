@@ -1817,6 +1817,7 @@ body::before { display: none; }
       <select id="bridgeFormProtocol" class="route-modal-select" onchange="updateBridgeProtocolHints()">
         <option value="webhook">Webhook</option>
         <option value="slack">Slack</option>
+        <option value="yandex">Yandex Messenger</option>
       </select>
       <div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:4px" id="bridgeProtocolDesc"></div>
     </div>
@@ -1832,6 +1833,14 @@ body::before { display: none; }
       <label style="margin-top:10px">Signing Secret</label>
       <input type="text" id="bridgeSlackSecret" placeholder="abc123...">
       <div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:4px" id="slackSecretHint"></div>
+    </div>
+    <div class="modal-field" id="bridgeYandexFields" style="display:none">
+      <label id="yandexTokenLabel">Bot Token <span style="color:var(--red)">*</span></label>
+      <input type="text" id="bridgeYandexToken" placeholder="OAuth token">
+      <div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:4px" id="yandexTokenHint"></div>
+      <label style="margin-top:10px" id="yandexSecretLabel">Webhook Secret</label>
+      <input type="text" id="bridgeYandexSecret" placeholder="shared secret">
+      <div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:4px" id="yandexSecretHint"></div>
     </div>
     <div class="modal-field" id="bridgeConfigField">
       <label id="bridgeConfigLabel">Config (JSON)</label>
@@ -3102,6 +3111,8 @@ function showBridgeModal(bridgeId) {
   document.getElementById('bridgeFormConfig').value = '{}';
   document.getElementById('bridgeSlackToken').value = '';
   document.getElementById('bridgeSlackSecret').value = '';
+  document.getElementById('bridgeYandexToken').value = '';
+  document.getElementById('bridgeYandexSecret').value = '';
   document.getElementById('bridgeFormEnabled').checked = true;
   document.getElementById('bridgeWebhookURL').style.display = 'none';
 
@@ -3122,6 +3133,13 @@ function showBridgeModal(bridgeId) {
             document.getElementById('bridgeSlackSecret').value = cfg.signing_secret || '';
           } catch(e) {}
         }
+        if (b.protocol === 'yandex') {
+          try {
+            const cfg = JSON.parse(b.config || '{}');
+            document.getElementById('bridgeYandexToken').value = cfg.bot_token || '';
+            document.getElementById('bridgeYandexSecret').value = cfg.webhook_secret || '';
+          } catch(e) {}
+        }
         const whURL = `${location.origin}/bridge/${b.id}/incoming`;
         const whEl = document.getElementById('bridgeWebhookURL');
         whEl.innerHTML = `<span style="color:var(--text3)">${t('bridge_webhook_url')}:</span><br><span style="cursor:pointer" onclick="navigator.clipboard.writeText('${whURL}');this.style.color='var(--green)';setTimeout(()=>this.style.color='',1000)" title="Click to copy">${esc(whURL)}</span>`;
@@ -3139,26 +3157,27 @@ function closeBridgeModal() { document.getElementById('bridgeModal').style.displ
 function updateBridgeProtocolHints() {
   const proto = document.getElementById('bridgeFormProtocol').value;
   const isSlack = proto === 'slack';
+  const isYandex = proto === 'yandex';
+  const isNative = isSlack || isYandex;
 
-  // Protocol description
-  document.getElementById('bridgeProtocolDesc').textContent = t(isSlack ? 'protocol_slack_desc' : 'protocol_webhook_desc');
+  const descKey = isSlack ? 'protocol_slack_desc' : isYandex ? 'protocol_yandex_desc' : 'protocol_webhook_desc';
+  document.getElementById('bridgeProtocolDesc').textContent = t(descKey);
 
-  // Show/hide fields based on protocol
-  document.getElementById('bridgeCallbackField').style.display = isSlack ? 'none' : '';
+  document.getElementById('bridgeCallbackField').style.display = isNative ? 'none' : '';
   document.getElementById('bridgeSlackFields').style.display = isSlack ? '' : 'none';
-  document.getElementById('bridgeConfigField').style.display = isSlack ? 'none' : '';
+  document.getElementById('bridgeYandexFields').style.display = isYandex ? '' : 'none';
+  document.getElementById('bridgeConfigField').style.display = isNative ? 'none' : '';
 
-  // Webhook hints
   document.getElementById('bridgeCallbackHint').textContent = t('webhook_callback_hint');
   document.getElementById('bridgeConfigHint').textContent = t('webhook_config_hint');
 
-  // Slack hints
   document.getElementById('slackTokenHint').textContent = t('slack_token_hint');
   document.getElementById('slackSecretHint').textContent = t('slack_secret_hint');
+  document.getElementById('yandexTokenHint').textContent = t('yandex_token_hint');
+  document.getElementById('yandexSecretHint').textContent = t('yandex_secret_hint');
 
-  // How it works
-  const howText = t(isSlack ? 'bridge_how_slack' : 'bridge_how_webhook');
-  document.getElementById('bridgeHowItWorks').innerHTML = esc(howText).replace(/\n/g, '<br>');
+  const howKey = isSlack ? 'bridge_how_slack' : isYandex ? 'bridge_how_yandex' : 'bridge_how_webhook';
+  document.getElementById('bridgeHowItWorks').innerHTML = esc(t(howKey)).replace(/\n/g, '<br>');
 }
 
 async function saveBridge() {
@@ -3170,6 +3189,12 @@ async function saveBridge() {
     const signingSecret = document.getElementById('bridgeSlackSecret').value.trim();
     if (!botToken) { toast('Slack Bot Token is required', 'error'); return; }
     config = JSON.stringify({bot_token: botToken, signing_secret: signingSecret});
+    callbackUrl = '';
+  } else if (proto === 'yandex') {
+    const botToken = document.getElementById('bridgeYandexToken').value.trim();
+    const webhookSecret = document.getElementById('bridgeYandexSecret').value.trim();
+    if (!botToken) { toast(t('yandex_token_required'), 'error'); return; }
+    config = JSON.stringify({bot_token: botToken, webhook_secret: webhookSecret});
     callbackUrl = '';
   } else {
     config = document.getElementById('bridgeFormConfig').value.trim() || '{}';

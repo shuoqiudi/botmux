@@ -1,0 +1,21 @@
+---
+title: "Yandex Messenger 桥接"
+description: "通过 Bot API webhook 原生集成 Yandex Messenger"
+---
+
+BotMux 通过 [ymsdk](https://github.com/rekurt/ymsdk) Go 客户端原生支持 [Yandex Messenger](https://yandex.ru/support/messenger/) 桥接。
+
+## 设置
+
+1. 在 Yandex Messenger 管理面板创建机器人并获取 **OAuth bot token**
+2. 在 BotMux 中：**Bridges → Add Bridge → Yandex Messenger**
+3. 填写 Bot Token 和 Webhook Secret，保存并复制 Incoming URL
+4. 通过 `self.update` 注册 webhook URL（与 Slack 桥接类似，需 HTTPS）
+
+详见英文文档 [Yandex Messenger Bridge](/docs/en/bridges/yandex)。
+
+## 支持的内容
+
+- **入站**：文本、图片、文件、贴纸、图库（首张）、按钮回调
+- **出站**：文本、图片/贴纸/GIF、视频/音频/文档；Telegram inline keyboard 转为 Yandex suggest_buttons
+- **Web UI 媒体**：`bridge:{id}:{ym_file_id}` 通过 `/api/media` 代理

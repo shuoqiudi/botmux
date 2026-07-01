@@ -162,9 +162,10 @@ Custom classification system for chat members:
 - **Bidirectional**: outgoing bot messages are sent back to the source protocol automatically
 - Chat and message mappings maintained for threading and reply context
 - Bridges are managed per-bot from the web UI (admin only)
-- **Generic webhook bridge**: `POST /bridge/{id}/incoming` with `{chat_id, user_id, username, text, message_id}`. Outgoing via callback URL
+- **Generic webhook bridge**: `POST /bridge/{id}/incoming` with `{chat_id, user_id, username, text, message_id, media_type?, file_id?, file_name?}`. Outgoing via callback URL (includes media fields when present)
 - **Native Slack bridge**: full integration with Slack Events API and Web API (see setup guide below)
-- Supports any protocol via the generic webhook bridge; native protocol support available for Slack
+- **Native Yandex Messenger bridge**: Bot API webhooks via [ymsdk](https://github.com/rekurt/ymsdk) — text, images, files, stickers, button callbacks; outgoing media and Telegram inline keyboards → Yandex suggest buttons. See [docs/en/bridges/yandex.mdx](docs/en/bridges/yandex.mdx)
+- Supports any protocol via the generic webhook bridge; native protocol support for Slack and Yandex Messenger
 
 #### Slack Bridge Setup Guide
 
@@ -252,6 +253,17 @@ Slack channel                    BotMux                         Telegram
 - **Threading**: Slack thread replies are mapped to Telegram reply-to; bot replies to threaded messages maintain the thread context
 - **User names**: Display names are resolved via Slack `users.info` API (falls back to user ID)
 - **Security**: Requests are verified using HMAC-SHA256 signature (`X-Slack-Signature` header) with replay attack protection (5-minute window). **Strongly recommended** to configure `signing_secret`
+
+#### Yandex Messenger Bridge
+
+Native integration with Yandex Messenger Bot API ([ymsdk](https://github.com/rekurt/ymsdk)). Full setup guide: [docs/en/bridges/yandex.mdx](docs/en/bridges/yandex.mdx).
+
+1. Create a bot in Yandex Messenger → get OAuth token
+2. **Bridges → Add Bridge → Yandex Messenger** — set token and webhook secret
+3. Register Incoming URL via `self.update` API
+4. Messages sync both ways including **images, files, stickers**, and **inline keyboard → suggest buttons**
+
+Incoming Yandex media is shown in the web UI via `/api/media` (bridge-encoded file IDs). Outgoing bot media (including via `/tgapi/`) is downloaded from Telegram and sent through Yandex `sendImage` / `sendFile` / `sendGallery`.
 
 ### LLM-Based Smart Routing
 - Uses any **OpenAI-compatible API** (OpenAI, Ollama, LM Studio, etc.) for intelligent message routing
@@ -509,9 +521,11 @@ botmux/
 │   ├── bot/bot.go          Telegram Bot API wrapper (all bot methods)
 │   ├── llm/llm.go          LLM-based message routing (OpenAI-compatible)
 │   ├── proxy/proxy.go      Manager: polling, forwarding, health checks
-│   ├── bridge/             Multi-protocol bridges (generic webhook + Slack)
+│   ├── bridge/             Multi-protocol bridges (webhook + Slack + Yandex)
 │   │   ├── bridge.go
-│   │   └── slack.go
+│   │   ├── slack.go
+│   │   ├── yandex.go
+│   │   └── media.go
 │   └── server/             HTTP server, REST API, auth middleware
 │       ├── server.go
 │       └── templates/

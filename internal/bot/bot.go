@@ -3,6 +3,7 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -138,12 +139,21 @@ func (b *Bot) WebhookHandler() http.HandlerFunc {
 			http.Error(w, "Method not allowed", 405)
 			return
 		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10<<20))
+		if err != nil {
+			http.Error(w, "Bad request", 400)
+			return
+		}
 		var update tgbotapi.Update
-		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		if err := json.Unmarshal(body, &update); err != nil {
 			http.Error(w, "Bad request", 400)
 			return
 		}
 		b.processUpdate(update)
+		var rawUpdate map[string]any
+		if err := json.Unmarshal(body, &rawUpdate); err == nil {
+			b.ProcessRawUpdate(rawUpdate)
+		}
 		w.WriteHeader(200)
 	}
 }

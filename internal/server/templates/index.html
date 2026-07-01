@@ -2627,8 +2627,9 @@ function renderMsgContent(m) {
       html += `<a href="${mediaUrl}" target="_blank" class="msg-media-link">${icon} ${label}</a>`;
     }
   }
-  if (m.text) {
-    html += esc(m.text).replace(/\n/g, '<br>');
+  const bodyText = m.text || m.rich_text || '';
+  if (bodyText) {
+    html += esc(bodyText).replace(/\n/g, '<br>');
   }
   if (!html) {
     html = `<span style="color:var(--text3);font-style:italic">${m.media_type ? (mediaIcons[m.media_type]||'📎') + ' ' + (getMediaLabels()[m.media_type]||t('media_generic')) : t('media_empty')}</span>`;
@@ -3517,7 +3518,7 @@ async function doSearch() {
     document.getElementById('messagesList').innerHTML = msgs.map(m => `
       <div class="msg-row ${m.deleted ? 'msg-deleted' : ''}">
         <span class="msg-user${m.from_id ? ' clickable' : ''}" ${m.from_id ? `onclick="showUserProfile(${m.from_id})"` : ''}>${esc(m.from_user)}</span>${m.from_is_bot ? `<span class="msg-bot-badge">${t('bot_badge')}</span>` : ''}${m.sender_tag ? `<span class="msg-sender-tag">${esc(m.sender_tag)}</span>` : ''}
-        <span class="msg-text">${m.media_type ? renderMsgContent(m) : highlight(esc(m.text), esc(q))}</span>
+        <span class="msg-text">${m.media_type ? renderMsgContent(m) : highlight(esc(m.text || m.rich_text || ''), esc(q))}</span>
         ${m.deleted ? `<span class="msg-deleted-badge">${t('deleted')}</span>` : ''}
         <span class="msg-time">${m.date_str}</span>
       </div>

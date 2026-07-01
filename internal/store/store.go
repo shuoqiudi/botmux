@@ -127,6 +127,7 @@ func (s *Store) migrate() error {
 			from_user TEXT NOT NULL DEFAULT '',
 			from_id INTEGER NOT NULL DEFAULT 0,
 			text TEXT NOT NULL DEFAULT '',
+			rich_text TEXT NOT NULL DEFAULT '',
 			date INTEGER NOT NULL DEFAULT 0,
 			reply_to_id INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (bot_id, chat_id, id)
@@ -192,6 +193,13 @@ func (s *Store) migrate() error {
 	if hasFromIsBot == 0 {
 		s.db.Exec(`ALTER TABLE messages ADD COLUMN from_is_bot INTEGER NOT NULL DEFAULT 0`)
 		s.db.Exec(`ALTER TABLE messages ADD COLUMN sender_tag TEXT NOT NULL DEFAULT ''`)
+	}
+
+	// Add rich_text column if missing (Bot API 10.1 rich_message plain-text fallback)
+	var hasRichText int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='rich_text'`).Scan(&hasRichText)
+	if hasRichText == 0 {
+		s.db.Exec(`ALTER TABLE messages ADD COLUMN rich_text TEXT NOT NULL DEFAULT ''`)
 	}
 
 	// Add backend health columns if missing
@@ -317,14 +325,19 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (bot_id, chat_id, id)
 		)`)
 		// Copy data, deriving bot_id from chats table where possible
-		s.db.Exec(`INSERT INTO messages_new (id, bot_id, chat_id, from_user, from_id, text, date, reply_to_id, deleted, media_type, file_id)
-			SELECT m.id, COALESCE(c.bot_id, 0), m.chat_id, m.from_user, m.from_id, m.text, m.date, m.reply_to_id, m.deleted, m.media_type, m.file_id
+		s.db.Exec(`INSERT INTO messages_new (id, bot_id, chat_id, from_user, from_id, text, rich_text, date, reply_to_id, deleted, media_type, file_id)
+			SELECT m.id, COALESCE(c.bot_id, 0), m.chat_id, m.from_user, m.from_id, m.text, COALESCE(m.rich_text, ''), m.date, m.reply_to_id, m.deleted, m.media_type, m.file_id
 			FROM messages m LEFT JOIN chats c ON m.chat_id = c.id`)
 		s.db.Exec(`DROP TABLE messages`)
 		s.db.Exec(`ALTER TABLE messages_new RENAME TO messages`)
 		s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)`)
 		s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(chat_id, from_id)`)
 		log.Println("[store] messages table migration complete")
+	}
+
+	s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='rich_text'`).Scan(&hasRichText)
+	if hasRichText == 0 {
+		s.db.Exec(`ALTER TABLE messages ADD COLUMN rich_text TEXT NOT NULL DEFAULT ''`)
 	}
 
 	// Create auth tables
@@ -542,7 +555,7 @@ func (s *Store) UpsertChat(botID int64, c models.Chat) error {
 func (s *Store) GetChats(botID int64) ([]models.Chat, error) {
 	rows, err := s.db.Query(`
 		SELECT c.id, c.type, c.title, c.username, c.member_count, c.description, c.is_admin, c.updated_at,
-			COALESCE(m.text, ''), COALESCE(m.from_user, ''), COALESCE(m.date, 0)
+			COALESCE(NULLIF(m.text, ''), m.rich_text, ''), COALESCE(m.from_user, ''), COALESCE(m.date, 0)
 		FROM chats c
 		LEFT JOIN messages m ON m.bot_id = c.bot_id AND m.chat_id = c.id AND m.id = (
 			SELECT id FROM messages WHERE bot_id = c.bot_id AND chat_id = c.id ORDER BY date DESC LIMIT 1
@@ -614,16 +627,17 @@ func (s *Store) SaveMessage(m models.Message) error {
 		fromIsBot = 1
 	}
 	res, err := s.db.Exec(`
-		INSERT INTO messages (id, bot_id, chat_id, from_user, from_id, text, date, reply_to_id, media_type, file_id, from_is_bot, sender_tag)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (id, bot_id, chat_id, from_user, from_id, text, rich_text, date, reply_to_id, media_type, file_id, from_is_bot, sender_tag)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bot_id, chat_id, id) DO UPDATE SET
 			text       = excluded.text,
+			rich_text  = CASE WHEN excluded.rich_text != '' THEN excluded.rich_text ELSE messages.rich_text END,
 			media_type = CASE WHEN excluded.media_type != '' THEN excluded.media_type ELSE messages.media_type END,
 			file_id    = CASE WHEN excluded.file_id    != '' THEN excluded.file_id    ELSE messages.file_id    END,
 			sender_tag = CASE WHEN excluded.sender_tag != '' THEN excluded.sender_tag ELSE messages.sender_tag END,
 			from_is_bot = excluded.from_is_bot
 		WHERE messages.deleted = 0
-	`, m.ID, m.BotID, m.ChatID, m.FromUser, m.FromID, m.Text, m.Date, m.ReplyToID, m.MediaType, m.FileID, fromIsBot, m.SenderTag)
+	`, m.ID, m.BotID, m.ChatID, m.FromUser, m.FromID, m.Text, m.RichText, m.Date, m.ReplyToID, m.MediaType, m.FileID, fromIsBot, m.SenderTag)
 	if err != nil {
 		return err
 	}
@@ -637,7 +651,7 @@ func (s *Store) SaveMessage(m models.Message) error {
 
 func (s *Store) GetMessages(botID, chatID int64, limit, offset int) ([]models.Message, error) {
 	rows, err := s.db.Query(`
-		SELECT id, bot_id, chat_id, from_user, from_id, text, date, reply_to_id, deleted, media_type, file_id, from_is_bot, sender_tag
+		SELECT id, bot_id, chat_id, from_user, from_id, text, rich_text, date, reply_to_id, deleted, media_type, file_id, from_is_bot, sender_tag
 		FROM messages WHERE bot_id = ? AND chat_id = ? ORDER BY date DESC LIMIT ? OFFSET ?
 	`, botID, chatID, limit, offset)
 	if err != nil {
@@ -648,7 +662,7 @@ func (s *Store) GetMessages(botID, chatID int64, limit, offset int) ([]models.Me
 	var msgs []models.Message
 	for rows.Next() {
 		var m models.Message
-		if err := rows.Scan(&m.ID, &m.BotID, &m.ChatID, &m.FromUser, &m.FromID, &m.Text, &m.Date, &m.ReplyToID, &m.Deleted, &m.MediaType, &m.FileID, &m.FromIsBot, &m.SenderTag); err != nil {
+		if err := rows.Scan(&m.ID, &m.BotID, &m.ChatID, &m.FromUser, &m.FromID, &m.Text, &m.RichText, &m.Date, &m.ReplyToID, &m.Deleted, &m.MediaType, &m.FileID, &m.FromIsBot, &m.SenderTag); err != nil {
 			return nil, err
 		}
 		m.DateStr = time.UnixMilli(m.Date).Format("2006-01-02 15:04:05")
@@ -660,9 +674,9 @@ func (s *Store) GetMessages(botID, chatID int64, limit, offset int) ([]models.Me
 func (s *Store) GetMessage(botID, chatID int64, messageID int) (*models.Message, error) {
 	var m models.Message
 	err := s.db.QueryRow(`
-		SELECT id, bot_id, chat_id, from_user, from_id, text, date, reply_to_id, deleted, media_type, file_id, from_is_bot, sender_tag
+		SELECT id, bot_id, chat_id, from_user, from_id, text, rich_text, date, reply_to_id, deleted, media_type, file_id, from_is_bot, sender_tag
 		FROM messages WHERE bot_id = ? AND chat_id = ? AND id = ?
-	`, botID, chatID, messageID).Scan(&m.ID, &m.BotID, &m.ChatID, &m.FromUser, &m.FromID, &m.Text, &m.Date, &m.ReplyToID, &m.Deleted, &m.MediaType, &m.FileID, &m.FromIsBot, &m.SenderTag)
+	`, botID, chatID, messageID).Scan(&m.ID, &m.BotID, &m.ChatID, &m.FromUser, &m.FromID, &m.Text, &m.RichText, &m.Date, &m.ReplyToID, &m.Deleted, &m.MediaType, &m.FileID, &m.FromIsBot, &m.SenderTag)
 	if err != nil {
 		return nil, err
 	}
@@ -718,10 +732,10 @@ func (s *Store) GetChatStats(botID, chatID int64) (*models.ChatStats, error) {
 
 func (s *Store) SearchMessages(botID, chatID int64, query string, limit int) ([]models.Message, error) {
 	rows, err := s.db.Query(`
-		SELECT id, bot_id, chat_id, from_user, from_id, text, date, reply_to_id, deleted, media_type, file_id, from_is_bot, sender_tag
-		FROM messages WHERE bot_id = ? AND chat_id = ? AND text LIKE ?
+		SELECT id, bot_id, chat_id, from_user, from_id, text, rich_text, date, reply_to_id, deleted, media_type, file_id, from_is_bot, sender_tag
+		FROM messages WHERE bot_id = ? AND chat_id = ? AND (text LIKE ? OR rich_text LIKE ?)
 		ORDER BY date DESC LIMIT ?
-	`, botID, chatID, "%"+query+"%", limit)
+	`, botID, chatID, "%"+query+"%", "%"+query+"%", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -730,7 +744,7 @@ func (s *Store) SearchMessages(botID, chatID int64, query string, limit int) ([]
 	var msgs []models.Message
 	for rows.Next() {
 		var m models.Message
-		rows.Scan(&m.ID, &m.BotID, &m.ChatID, &m.FromUser, &m.FromID, &m.Text, &m.Date, &m.ReplyToID, &m.Deleted, &m.MediaType, &m.FileID, &m.FromIsBot, &m.SenderTag)
+		rows.Scan(&m.ID, &m.BotID, &m.ChatID, &m.FromUser, &m.FromID, &m.Text, &m.RichText, &m.Date, &m.ReplyToID, &m.Deleted, &m.MediaType, &m.FileID, &m.FromIsBot, &m.SenderTag)
 		m.DateStr = time.UnixMilli(m.Date).Format("2006-01-02 15:04:05")
 		msgs = append(msgs, m)
 	}

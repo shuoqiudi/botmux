@@ -46,6 +46,7 @@ type Message struct {
 	FromUser  string `json:"from_user"`
 	FromID    int64  `json:"from_id"`
 	Text      string `json:"text"`
+	RichText  string `json:"rich_text,omitempty"`
 	Date      int64  `json:"date"`
 	DateStr   string `json:"date_str"`
 	ReplyToID int    `json:"reply_to_id,omitempty"`
@@ -199,6 +200,9 @@ type BridgeIncomingMessage struct {
 	Text           string `json:"text"`
 	ExternalMsgID  string `json:"message_id"`
 	ReplyToMsgID   string `json:"reply_to"`
+	MediaType      string `json:"media_type,omitempty"`
+	FileID         string `json:"file_id,omitempty"`   // protocol-native file identifier
+	FileName       string `json:"file_name,omitempty"` // optional display/download name
 }
 
 // BridgeOutgoingMessage is what we POST back to the bridge callback
@@ -208,6 +212,9 @@ type BridgeOutgoingMessage struct {
 	Text           string `json:"text"`
 	TelegramMsgID  int    `json:"telegram_msg_id"`
 	ReplyToExtID   string `json:"reply_to,omitempty"`
+	MediaType      string `json:"media_type,omitempty"`
+	FileID         string `json:"file_id,omitempty"`
+	FileName       string `json:"file_name,omitempty"`
 }
 
 // BridgeChatMapping tracks external_chat_id <-> telegram_chat_id

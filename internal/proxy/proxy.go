@@ -675,6 +675,7 @@ func (pm *Manager) processForManagement(botID int64, rawUpdate map[string]any) {
 		return
 	}
 	b.ProcessUpdate(update)
+	b.ProcessRawUpdate(rawUpdate)
 }
 
 // applyLLMRoutes uses LLM to decide routing for an incoming update

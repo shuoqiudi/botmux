@@ -2074,10 +2074,23 @@ func (s *Server) handleBridgeIncoming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is a Slack bridge — route to Slack handler
+	// Route to protocol-specific handlers
 	cfg := s.bridge.GetBridge(bridgeID)
 	if cfg != nil && bridge.IsSlackBridge(cfg) {
 		respBody, contentType, status, err := s.bridge.HandleSlackEvent(bridgeID, r.Header, body)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		w.Write(respBody)
+		return
+	}
+	if cfg != nil && bridge.IsYandexBridge(cfg) {
+		respBody, contentType, status, err := s.bridge.HandleYandexEvent(bridgeID, r.Header, body)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
@@ -3073,6 +3086,18 @@ func (s *Server) handleMediaProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bridge-encoded file IDs (external protocol media shown in the UI).
+	if bridgeID, extFileID, ok := bridge.ParseBridgeFileID(fileID); ok {
+		if s.bridge == nil {
+			http.Error(w, "bridge manager not initialized", 500)
+			return
+		}
+		if err := s.bridge.ServeBridgeMedia(w, bridgeID, extFileID); err != nil {
+			http.Error(w, "bridge media failed", 502)
+		}
+		return
+	}
+
 	botCfg, err := s.store.GetBotConfig(botID)
 	if err != nil {
 		http.Error(w, "bot not found", 404)
@@ -3515,6 +3540,11 @@ func InferTelegramMethod(body []byte) string {
 		return ""
 	}
 	switch {
+	case params["rich_message"] != nil:
+		if params["message_id"] != nil {
+			return "editMessageText"
+		}
+		return "sendRichMessage"
 	case params["live_photo"] != nil:
 		return "sendLivePhoto"
 	case params["photo"] != nil:
@@ -3555,25 +3585,27 @@ func InferTelegramMethod(body []byte) string {
 
 // sendMethods lists Telegram API methods that return a models.Message in the result
 var sendMethods = map[string]bool{
-	"sendMessage":        true,
-	"sendPhoto":          true,
-	"sendAudio":          true,
-	"sendDocument":       true,
-	"sendVideo":          true,
-	"sendAnimation":      true,
-	"sendVoice":          true,
-	"sendVideoNote":      true,
-	"sendSticker":        true,
-	"sendLivePhoto":      true,
-	"sendLocation":       true,
-	"sendVenue":          true,
-	"sendContact":        true,
-	"sendPoll":           true,
-	"sendDice":           true,
-	"forwardMessage":     true,
-	"editMessageText":    true,
-	"editMessageCaption": true,
-	"editMessageMedia":   true,
+	"sendMessage":          true,
+	"sendRichMessage":      true,
+	"sendRichMessageDraft": true,
+	"sendPhoto":            true,
+	"sendAudio":            true,
+	"sendDocument":         true,
+	"sendVideo":            true,
+	"sendAnimation":        true,
+	"sendVoice":            true,
+	"sendVideoNote":        true,
+	"sendSticker":          true,
+	"sendLivePhoto":        true,
+	"sendLocation":         true,
+	"sendVenue":            true,
+	"sendContact":          true,
+	"sendPoll":             true,
+	"sendDice":             true,
+	"forwardMessage":       true,
+	"editMessageText":      true,
+	"editMessageCaption":   true,
+	"editMessageMedia":     true,
 }
 
 type telegramRequestParams struct {
@@ -3642,8 +3674,10 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 		VideoNote *struct {
 			FileID string `json:"file_id"`
 		} `json:"video_note"`
-		LivePhoto map[string]any `json:"live_photo"`
-		SenderTag string         `json:"sender_tag"`
+		LivePhoto   map[string]any  `json:"live_photo"`
+		RichMessage map[string]any  `json:"rich_message"`
+		SenderTag   string          `json:"sender_tag"`
+		ReplyMarkup json.RawMessage `json:"reply_markup"`
 	}
 	if err := json.Unmarshal(resp.Result, &msg); err != nil || msg.MessageID == 0 {
 		return
@@ -3658,10 +3692,13 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 	if text == "" {
 		text = msg.Caption
 	}
+	richText := bot.ExtractRichText(msg.RichMessage)
 
 	// Detect media type and file_id from response
 	var mediaType, fileID string
 	switch {
+	case msg.RichMessage != nil:
+		mediaType = "rich_message"
 	case msg.LivePhoto != nil:
 		mediaType = "live_photo"
 		fileID = bot.LivePhotoFileID(msg.LivePhoto)
@@ -3697,6 +3734,7 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 		FromUser:  fromUser,
 		FromID:    msg.From.ID,
 		Text:      text,
+		RichText:  richText,
 		Date:      msg.Date * 1000,
 		MediaType: mediaType,
 		FileID:    fileID,
@@ -3707,6 +3745,15 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 	} else {
 		log.Printf("[tgapi-proxy] Captured %s: msg_id=%d chat_id=%d from=%s text=%q",
 			method, msg.MessageID, msg.Chat.ID, fromUser, truncateStr(text, 80))
+	}
+
+	if s.bridge != nil && msgBotID != 0 {
+		buttons := bridge.TelegramInlineKeyboardToYandex(msg.ReplyMarkup)
+		if buttons != nil {
+			s.bridge.NotifyOutgoingWithButtons(msgBotID, msg.Chat.ID, text, msg.MessageID, 0, buttons)
+		} else {
+			s.bridge.NotifyOutgoing(msgBotID, msg.Chat.ID, text, msg.MessageID, 0)
+		}
 	}
 
 	// Also track the chat if we have a bot for this token

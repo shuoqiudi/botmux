@@ -173,6 +173,69 @@ func TestCaptureSentMessageStoresFullSendMessageResults(t *testing.T) {
 	}
 }
 
+func TestCaptureSentMessageStoresRichMessageResults(t *testing.T) {
+	store := newTestStore(t)
+	server := server.NewServer(store, nil)
+
+	botID, err := store.AddBotConfig(models.BotConfig{
+		Name:        "Rich Bot",
+		Token:       "richtoken",
+		BotUsername: "richbot",
+	})
+	if err != nil {
+		t.Fatalf("AddBotConfig() error = %v", err)
+	}
+
+	server.CaptureSentMessage("richtoken", "sendRichMessage", nil, "", []byte(`{
+		"ok": true,
+		"result": {
+			"message_id": 401,
+			"chat": {"id": 777, "type": "private"},
+			"from": {"id": 88, "username": "richbot", "first_name": "Rich", "is_bot": true},
+			"date": 1700000000,
+			"rich_message": {
+				"blocks": [
+					{"type": "paragraph", "text": {"texts": [{"type": "bold", "text": "Hello"}, {"type": "plain", "text": "rich"}]}}
+				]
+			}
+		}
+	}`))
+
+	msg, err := store.GetMessage(botID, 777, 401)
+	if err != nil {
+		t.Fatalf("GetMessage() error = %v", err)
+	}
+	if msg.MediaType != "rich_message" {
+		t.Fatalf("MediaType = %q, want rich_message", msg.MediaType)
+	}
+	if msg.RichText != "Hello\nrich" {
+		t.Fatalf("RichText = %q, want extracted text", msg.RichText)
+	}
+
+	server.CaptureSentMessage("richtoken", "editMessageText", nil, "", []byte(`{
+		"ok": true,
+		"result": {
+			"message_id": 401,
+			"chat": {"id": 777, "type": "private"},
+			"from": {"id": 88, "username": "richbot", "first_name": "Rich", "is_bot": true},
+			"date": 1700000001,
+			"rich_message": {
+				"blocks": [
+					{"type": "paragraph", "text": {"text": "Updated rich text"}}
+				]
+			}
+		}
+	}`))
+
+	msg, err = store.GetMessage(botID, 777, 401)
+	if err != nil {
+		t.Fatalf("GetMessage() after edit error = %v", err)
+	}
+	if msg.RichText != "Updated rich text" {
+		t.Fatalf("edited RichText = %q, want updated rich text", msg.RichText)
+	}
+}
+
 // TestSaveMessageUpsertUpdatesTextOnEdit verifies that re-saving a message
 // with the same (bot_id, chat_id, id) PK updates the text — this is the
 // streaming / editMessageText path for bots like "openclaw" that edit the

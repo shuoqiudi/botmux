@@ -2074,23 +2074,10 @@ func (s *Server) handleBridgeIncoming(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route to protocol-specific handlers
+	// Check if this is a Slack bridge — route to Slack handler
 	cfg := s.bridge.GetBridge(bridgeID)
 	if cfg != nil && bridge.IsSlackBridge(cfg) {
 		respBody, contentType, status, err := s.bridge.HandleSlackEvent(bridgeID, r.Header, body)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(status)
-		w.Write(respBody)
-		return
-	}
-	if cfg != nil && bridge.IsYandexBridge(cfg) {
-		respBody, contentType, status, err := s.bridge.HandleYandexEvent(bridgeID, r.Header, body)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
@@ -3086,18 +3073,6 @@ func (s *Server) handleMediaProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Bridge-encoded file IDs (external protocol media shown in the UI).
-	if bridgeID, extFileID, ok := bridge.ParseBridgeFileID(fileID); ok {
-		if s.bridge == nil {
-			http.Error(w, "bridge manager not initialized", 500)
-			return
-		}
-		if err := s.bridge.ServeBridgeMedia(w, bridgeID, extFileID); err != nil {
-			http.Error(w, "bridge media failed", 502)
-		}
-		return
-	}
-
 	botCfg, err := s.store.GetBotConfig(botID)
 	if err != nil {
 		http.Error(w, "bot not found", 404)
@@ -3677,7 +3652,6 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 		LivePhoto   map[string]any  `json:"live_photo"`
 		RichMessage map[string]any  `json:"rich_message"`
 		SenderTag   string          `json:"sender_tag"`
-		ReplyMarkup json.RawMessage `json:"reply_markup"`
 	}
 	if err := json.Unmarshal(resp.Result, &msg); err != nil || msg.MessageID == 0 {
 		return
@@ -3745,15 +3719,6 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 	} else {
 		log.Printf("[tgapi-proxy] Captured %s: msg_id=%d chat_id=%d from=%s text=%q",
 			method, msg.MessageID, msg.Chat.ID, fromUser, truncateStr(text, 80))
-	}
-
-	if s.bridge != nil && msgBotID != 0 {
-		buttons := bridge.TelegramInlineKeyboardToYandex(msg.ReplyMarkup)
-		if buttons != nil {
-			s.bridge.NotifyOutgoingWithButtons(msgBotID, msg.Chat.ID, text, msg.MessageID, 0, buttons)
-		} else {
-			s.bridge.NotifyOutgoing(msgBotID, msg.Chat.ID, text, msg.MessageID, 0)
-		}
 	}
 
 	// Also track the chat if we have a bot for this token

@@ -346,7 +346,7 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) bool {
 	if inbound != nil && int64(updateID) > 0 && int64(updateID) < bridgeUpdateIDThreshold {
 		if _, err := inbound.IngestUpdate(context.Background(), botID, rawUpdate); err != nil {
 			pm.store.UpdateBotStatus(botID, "Gateway inbound persistence unavailable", "")
-			log.Printf("[proxy] ProcessUpdate: botID=%d inbound persistence failed", botID)
+			log.Printf("[proxy] ProcessUpdate: botID=%d inbound persistence failed: %v", botID, err)
 			return false
 		}
 	}

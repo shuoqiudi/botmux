@@ -105,6 +105,9 @@ const inboundDeliverySelect = `
 // raw Update before any Redis append or Telegram offset advancement. Duplicate
 // Update IDs and callback IDs return the original Delivery.
 func (s *Store) PrepareInboundDelivery(ctx context.Context, botID, updateID int64, callbackID string, chatID int64, raw []byte) (*models.InboundDelivery, bool, error) {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+
 	if updateID <= 0 {
 		return nil, false, errors.New("Telegram update_id must be positive")
 	}
@@ -164,12 +167,18 @@ func (s *Store) GetInboundDeliveryByUpdate(ctx context.Context, botID, updateID 
 }
 
 func (s *Store) SetInboundStreamID(ctx context.Context, deliveryID, streamID string) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+
 	_, err := s.db.ExecContext(ctx, `UPDATE gateway_inbound_deliveries SET stream_id=?,updated_at=? WHERE delivery_id=? AND stream_id=''`,
 		streamID, time.Now().UTC().Format(time.RFC3339Nano), deliveryID)
 	return err
 }
 
 func (s *Store) BeginInboundAttempt(ctx context.Context, deliveryID, attemptID string) (int, error) {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -190,6 +199,9 @@ func (s *Store) BeginInboundAttempt(ctx context.Context, deliveryID, attemptID s
 }
 
 func (s *Store) CompleteInboundAttempt(ctx context.Context, deliveryID, attemptID string, httpStatus int) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -206,6 +218,9 @@ func (s *Store) CompleteInboundAttempt(ctx context.Context, deliveryID, attemptI
 }
 
 func (s *Store) FailInboundAttempt(ctx context.Context, deliveryID, attemptID, class string, httpStatus int, next time.Time) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	nextValue := next.UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -223,6 +238,9 @@ func (s *Store) FailInboundAttempt(ctx context.Context, deliveryID, attemptID, c
 }
 
 func (s *Store) MarkInboundDLQ(ctx context.Context, deliveryID, class string) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+
 	_, err := s.db.ExecContext(ctx, `UPDATE gateway_inbound_deliveries SET status=?,next_attempt_at='',last_error_class=?,updated_at=? WHERE delivery_id=?`,
 		models.InboundDLQ, class, time.Now().UTC().Format(time.RFC3339Nano), deliveryID)
 	return err

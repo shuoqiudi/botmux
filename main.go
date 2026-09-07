@@ -138,7 +138,7 @@ func main() {
 		redisClient = redis.NewClient(&redis.Options{Addr: *redisAddr, Password: redisPassword, DB: *redisDB})
 		queue := gateway.NewRedisInboundQueue(redisClient)
 		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := redisClient.Ping(checkCtx).Err()
+		err = redisClient.Ping(checkCtx).Err()
 		if err == nil {
 			err = queue.VerifyDurability(checkCtx)
 		}

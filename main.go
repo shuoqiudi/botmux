@@ -53,6 +53,7 @@ func main() {
 	tokenFile := flag.String("token-file", "", "Read the Telegram bot token from a file")
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	dbPath := flag.String("db", "botdata.db", "SQLite database path")
+	gatewayKeyFile := flag.String("gateway-key-file", "", "Read the 32-byte Gateway encryption key from a mounted file")
 	webhookURL := flag.String("webhook", "", "Set webhook URL for the CLI bot (requires -token)")
 	tgAPI := flag.String("tg-api", "", "Custom Telegram API base URL (default: https://api.telegram.org)")
 	redisAddr := flag.String("redis-addr", "", "Redis address for durable Gateway Streams (for example redis:6379)")
@@ -97,7 +98,16 @@ func main() {
 	logBuf := logbuf.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, logBuf))
 
-	st, err := store.NewStore(*dbPath)
+	var st *store.Store
+	if *gatewayKeyFile != "" {
+		secretKey, keyErr := store.LoadSecretKey(*gatewayKeyFile)
+		if keyErr != nil {
+			log.Fatalf("Failed to load Gateway encryption key: %v", keyErr)
+		}
+		st, err = store.NewStoreWithSecretKey(*dbPath, secretKey)
+	} else {
+		st, err = store.NewStore(*dbPath)
+	}
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

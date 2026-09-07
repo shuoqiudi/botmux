@@ -287,11 +287,16 @@ func (s *Store) GetGatewayDeliveryForWorker(ctx context.Context, id string) (*mo
 
 func (s *Store) ResolveGatewayOutboundTarget(ctx context.Context, routeID int64) (*models.GatewayOutboundTarget, error) {
 	var target models.GatewayOutboundTarget
-	err := s.db.QueryRowContext(ctx, `SELECT r.route_key,a.id,r.enabled,r.outbound_enabled,a.token,d.chat_id
+	var tokenCiphertext string
+	err := s.db.QueryRowContext(ctx, `SELECT r.route_key,a.id,r.enabled,r.outbound_enabled,a.token_ciphertext,d.chat_id
 		FROM gateway_business_routes r
 		JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
 		JOIN gateway_telegram_destinations d ON d.id=r.destination_id
-		WHERE r.id=?`, routeID).Scan(&target.RouteKey, &target.BotAccountID, &target.Enabled, &target.Outbound, &target.Token, &target.ChatID)
+		WHERE r.id=?`, routeID).Scan(&target.RouteKey, &target.BotAccountID, &target.Enabled, &target.Outbound, &tokenCiphertext, &target.ChatID)
+	if err != nil {
+		return nil, err
+	}
+	target.Token, err = s.openSecret(tokenCiphertext)
 	if err != nil {
 		return nil, err
 	}

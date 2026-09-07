@@ -349,6 +349,9 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/gateway/v1/routes/setup", s.adminOnly(s.handleBusinessRouteSetup))
 	mux.HandleFunc("/api/gateway/v1/routes", s.adminOnly(s.handleBusinessRoutes))
 	mux.HandleFunc("/api/gateway/v1/routes/", s.adminOnly(s.handleBusinessRoutes))
+	mux.HandleFunc("/api/gateway/v1/workloads", s.adminOnly(s.handleGatewayWorkloads))
+	mux.HandleFunc("/api/gateway/v1/workloads/", s.adminOnly(s.handleGatewayWorkloads))
+	mux.HandleFunc("/api/gateway/v1/audit", s.adminOnly(s.handleGatewayAudit))
 
 	// Workload-authenticated business interface. This intentionally does not
 	// accept admin sessions or the legacy user API keys.

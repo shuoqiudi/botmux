@@ -4390,6 +4390,16 @@ function closeUserProfile() {
       </div>
     </div>
     <div id="businessRoutesList"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 8px">
+      <div class="panel-title" id="gatewayWorkloadsTitle">Workloads &amp; grants</div>
+      <button class="btn btn-primary btn-sm" id="gatewayWorkloadAddBtn" onclick="createGatewayWorkload()">+ WORKLOAD</button>
+    </div>
+    <div id="gatewayWorkloadsList"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 8px">
+      <div class="panel-title" id="gatewayAuditTitle">Gateway audit</div>
+      <button class="btn btn-sm" id="gatewayAuditRefreshBtn" onclick="loadGatewayAudit()">REFRESH</button>
+    </div>
+    <div id="gatewayAuditList"></div>
   </div>
 </div>
 
@@ -4445,7 +4455,9 @@ function applyBusinessRouteLang() {
     businessDestinationChatLabel: 'chat_id', businessRouteNameLabel: 'display_name',
     businessRouteBackendLabel: 'inbound_backend', businessRouteCallersLabel: 'allowed_callers',
     businessRouteInboundLabel: 'inbound', businessRouteOutboundLabel: 'outbound',
-    businessRouteEnabledLabel: 'active', businessRouteCancelBtn: 'cancel', businessRouteSaveBtn: 'validate_create'
+    businessRouteEnabledLabel: 'active', businessRouteCancelBtn: 'cancel', businessRouteSaveBtn: 'validate_create',
+    gatewayWorkloadsTitle: 'gateway_workloads', gatewayWorkloadAddBtn: 'gateway_workload_create',
+    gatewayAuditTitle: 'gateway_audit', gatewayAuditRefreshBtn: 'refresh'
   };
   for (const [id, key] of Object.entries(values)) {
     const el = document.getElementById(id);
@@ -4456,7 +4468,7 @@ function applyBusinessRouteLang() {
 async function showBusinessRoutes() {
   document.getElementById('businessRoutesModal').style.display = 'flex';
   applyBusinessRouteLang();
-  await loadBusinessRoutes();
+  await Promise.all([loadBusinessRoutes(), loadGatewayWorkloads(), loadGatewayAudit()]);
 }
 
 function closeBusinessRoutes() { document.getElementById('businessRoutesModal').style.display = 'none'; }
@@ -4485,6 +4497,7 @@ async function loadBusinessRoutes() {
             <span class="badge">${esc(route.destination_name)}</span>
             <span class="badge ${route.inbound_enabled ? 'badge-admin' : ''}">${t('inbound')}: ${route.inbound_enabled ? t('enabled') : t('disabled')}</span>
             <span class="badge ${route.outbound_enabled ? 'badge-proxy' : ''}">${t('outbound')}: ${route.outbound_enabled ? t('enabled') : t('disabled')}</span>
+            <span class="badge">${t('backend_credential')}: ${route.backend_credential_set ? t('configured') : t('not_configured')}</span>
           </div>
         </div>
         <div class="route-actions">
@@ -4555,17 +4568,82 @@ async function editBusinessRoute(key) {
   if (destinationName === null) return;
   const chatValue = prompt(t('destination_chat_prompt'), String(destination.chat_id));
   if (chatValue === null) return;
+  const token = prompt(t('bot_token_rotate_prompt'), '');
+  if (token === null) return;
+  const backendCredential = prompt(t('backend_credential_prompt'), '');
+  if (backendCredential === null) return;
+  const inboundValue = prompt(t('direction_prompt'), route.inbound_enabled ? 'on' : 'off');
+  if (inboundValue === null) return;
+  const outboundValue = prompt(t('outbound_direction_prompt'), route.outbound_enabled ? 'on' : 'off');
+  if (outboundValue === null) return;
+  const enabledValue = prompt(t('route_enabled_prompt'), route.enabled ? 'on' : 'off');
+  if (enabledValue === null) return;
+  const asEnabled = value => String(value).trim().toLowerCase() === 'on';
   try {
-    await api(`/api/gateway/v1/bot-accounts/${account.id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:accountName})});
-    await api(`/api/gateway/v1/destinations/${destination.id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:destinationName, bot_account_id:account.id, chat_id:Number(chatValue)})});
+    if (accountName !== account.name || token) {
+      await api(`/api/gateway/v1/bot-accounts/${account.id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:accountName, token, expected_revision:account.revision})});
+    }
+    if (destinationName !== destination.name || Number(chatValue) !== destination.chat_id) {
+      const latestAccounts = await api('/api/gateway/v1/bot-accounts');
+      const latestAccount = latestAccounts.find(item => item.id === account.id);
+      await api(`/api/gateway/v1/destinations/${destination.id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:destinationName, bot_account_id:latestAccount.id, chat_id:Number(chatValue), expected_revision:destination.revision})});
+    }
+    const latestRoute = await api(`/api/gateway/v1/routes/${route.route_key}`);
     await api(`/api/gateway/v1/routes/${route.route_key}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
       route_key:route.route_key, display_name:routeName, bot_account_id:account.id, destination_id:destination.id,
-      inbound_enabled:route.inbound_enabled, inbound_backend_url:route.inbound_backend_url || '', outbound_enabled:route.outbound_enabled,
-      allowed_callers:route.allowed_callers, enabled:route.enabled
+      inbound_enabled:asEnabled(inboundValue), inbound_backend_url:route.inbound_backend_url || '', inbound_backend_token:backendCredential,
+      outbound_enabled:asEnabled(outboundValue), allowed_callers:route.allowed_callers, enabled:asEnabled(enabledValue), expected_revision:latestRoute.revision
     })});
     toast(t('business_route_updated'));
     await loadBusinessRoutes();
   } catch(e) { toast(e.message, 'error'); }
+}
+
+async function loadGatewayWorkloads() {
+  const el = document.getElementById('gatewayWorkloadsList');
+  try {
+    const items = await api('/api/gateway/v1/workloads');
+    if (!items.length) { el.textContent = t('gateway_workloads_empty'); return; }
+    el.innerHTML = items.map(item => `<div class="route-item ${item.status === 'active' ? '' : 'route-disabled'}" style="margin-bottom:6px">
+      <div class="route-body"><strong>${esc(item.name)}</strong> <span class="badge">${t('revision')} ${item.revision}</span>
+      <div style="font-size:10px;color:var(--text3);margin-top:5px">${item.permissions.map(p => esc(p.route_key + ':' + p.action)).join(' · ') || t('gateway_no_grants')}</div></div>
+      <div class="route-actions"><button class="btn btn-sm" onclick="editGatewayGrants(${item.id},${item.revision})">${t('gateway_grants')}</button>
+      <button class="btn btn-sm" onclick="rotateGatewayCredential(${item.id},${item.revision})">${t('gateway_rotate')}</button>
+      <button class="btn btn-sm" onclick="toggleGatewayWorkload(${item.id},${item.revision},'${item.status}')">${item.status === 'active' ? t('gateway_disable') : t('gateway_enable')}</button></div></div>`).join('');
+  } catch(e) { el.textContent = e.message; }
+}
+
+async function createGatewayWorkload() {
+  const name = prompt(t('gateway_workload_name_prompt')); if (!name) return;
+  try { const result = await api('/api/gateway/v1/workloads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,credential_name:'primary'})});
+    prompt(t('gateway_credential_once'), result.credential); await loadGatewayWorkloads(); await loadGatewayAudit();
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function rotateGatewayCredential(id, revision) {
+  if (!confirm(t('gateway_rotate_confirm'))) return;
+  try { const result = await api(`/api/gateway/v1/workloads/${id}/credentials/rotate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,name:'rotated'})});
+    prompt(t('gateway_credential_once'), result.credential); await loadGatewayWorkloads(); await loadGatewayAudit();
+  } catch(e) { toast(e.message,'error'); }
+}
+
+async function editGatewayGrants(id, revision) {
+  const value = prompt(t('gateway_grants_prompt'), 'route_key:messages.send, route_key:callbacks.answer, route_key:deliveries.read'); if (value === null) return;
+  const permissions = value.split(',').map(v => v.trim()).filter(Boolean).map(v => { const at=v.lastIndexOf(':'); return {route_key:v.slice(0,at),action:v.slice(at+1)}; });
+  try { await api(`/api/gateway/v1/workloads/${id}/permissions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,permissions})}); await loadGatewayWorkloads(); await loadGatewayAudit(); }
+  catch(e) { toast(e.message,'error'); }
+}
+
+async function toggleGatewayWorkload(id, revision, status) {
+  try { await api(`/api/gateway/v1/workloads/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,status:status === 'active' ? 'disabled' : 'active'})}); await loadGatewayWorkloads(); await loadGatewayAudit(); }
+  catch(e) { toast(e.message,'error'); }
+}
+
+async function loadGatewayAudit() {
+  const el = document.getElementById('gatewayAuditList');
+  try { const events = await api('/api/gateway/v1/audit?limit=50');
+    el.innerHTML = events.length ? events.map(event => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:10px"><code>${esc(event.action)}</code> · ${esc(event.actor_id)} · ${t('revision')} ${event.revision}<div style="color:var(--text3)">${esc(JSON.stringify(event.diff))}</div></div>`).join('') : `<div>${t('gateway_audit_empty')}</div>`;
+  } catch(e) { el.textContent = e.message; }
 }
 
 async function testBusinessRoute(key) {

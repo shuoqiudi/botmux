@@ -55,48 +55,52 @@ func (s *Store) migrateInboundDeliveries() error {
 	return err
 }
 
-func scanInboundRoute(scanner interface{ Scan(...any) error }) (*models.InboundRoute, error) {
+func (s *Store) scanInboundRoute(scanner interface{ Scan(...any) error }) (*models.InboundRoute, error) {
 	var r models.InboundRoute
+	var backendCiphertext string
 	err := scanner.Scan(&r.ID, &r.Revision, &r.RouteKey, &r.BotAccountID, &r.Enabled,
-		&r.InboundEnabled, &r.Status, &r.BackendURL, &r.BackendToken)
+		&r.InboundEnabled, &r.Status, &r.BackendURL, &backendCiphertext)
 	if err != nil {
 		return nil, err
 	}
-	return &r, nil
+	r.BackendToken, err = s.openSecret(backendCiphertext)
+	return &r, err
 }
 
 const inboundRouteSelect = `
 	SELECT r.id,r.revision,r.route_key,r.bot_account_id,r.enabled,
-		r.inbound_enabled,r.status,r.inbound_backend_url,r.inbound_backend_token
+		r.inbound_enabled,r.status,r.inbound_backend_url,r.inbound_backend_token_ciphertext
 	FROM gateway_business_routes r
 	JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
 	JOIN gateway_telegram_destinations d ON d.id=r.destination_id
-	JOIN bots b ON b.id=? AND b.token=a.token
+	JOIN bots b ON b.id=? AND b.token_fingerprint=a.token_fingerprint
 	WHERE d.bot_account_id=a.id AND d.chat_id=?
 	ORDER BY (r.enabled=1 AND r.inbound_enabled=1 AND r.status='active') DESC,r.id
 	LIMIT 1`
 
 func (s *Store) ResolveInboundRoute(ctx context.Context, botID, chatID int64) (*models.InboundRoute, error) {
-	return scanInboundRoute(s.db.QueryRowContext(ctx, inboundRouteSelect, botID, chatID))
+	return s.scanInboundRoute(s.db.QueryRowContext(ctx, inboundRouteSelect, botID, chatID))
 }
 
-func findInboundDelivery(scanner interface{ Scan(...any) error }) (*models.InboundDelivery, error) {
+func (s *Store) findInboundDelivery(scanner interface{ Scan(...any) error }) (*models.InboundDelivery, error) {
 	var d models.InboundDelivery
+	var backendCiphertext string
 	err := scanner.Scan(&d.DeliveryID, &d.BotID, &d.BotAccountID, &d.RouteID, &d.RouteRevision,
 		&d.RouteKey, &d.UpdateID, &d.CallbackQueryID, &d.Status, &d.RawUpdate, &d.StreamID,
 		&d.AttemptCount, &d.NextAttemptAt, &d.LastErrorClass, &d.BackendURL,
-		&d.BackendToken, &d.CreatedAt, &d.UpdatedAt)
+		&backendCiphertext, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
-	return &d, nil
+	d.BackendToken, err = s.openSecret(backendCiphertext)
+	return &d, err
 }
 
 const inboundDeliverySelect = `
 	SELECT d.delivery_id,d.bot_id,d.bot_account_id,d.route_id,d.route_revision,
 		d.route_key,d.update_id,d.callback_query_id,d.status,d.raw_update,d.stream_id,
 		d.attempt_count,d.next_attempt_at,d.last_error_class,
-		COALESCE(rr.inbound_backend_url,''),COALESCE(rr.inbound_backend_token,''),
+		COALESCE(rr.inbound_backend_url,''),COALESCE(rr.inbound_backend_token_ciphertext,''),
 		d.created_at,d.updated_at
 	FROM gateway_inbound_deliveries d
 	LEFT JOIN gateway_route_revisions rr ON rr.route_id=d.route_id AND rr.revision=d.route_revision`
@@ -118,13 +122,13 @@ func (s *Store) PrepareInboundDelivery(ctx context.Context, botID, updateID int6
 	defer tx.Rollback()
 
 	existingQuery := inboundDeliverySelect + ` WHERE d.bot_id=? AND (d.update_id=? OR (? <> '' AND d.callback_query_id=?)) LIMIT 1`
-	if existing, err := findInboundDelivery(tx.QueryRowContext(ctx, existingQuery, botID, updateID, callbackID, callbackID)); err == nil {
+	if existing, err := s.findInboundDelivery(tx.QueryRowContext(ctx, existingQuery, botID, updateID, callbackID, callbackID)); err == nil {
 		return existing, false, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, false, err
 	}
 
-	route, routeErr := scanInboundRoute(tx.QueryRowContext(ctx, inboundRouteSelect, botID, chatID))
+	route, routeErr := s.scanInboundRoute(tx.QueryRowContext(ctx, inboundRouteSelect, botID, chatID))
 	status := models.InboundPending
 	if errors.Is(routeErr, sql.ErrNoRows) {
 		status = models.InboundRejectedUnknownRoute
@@ -146,7 +150,7 @@ func (s *Store) PrepareInboundDelivery(ctx context.Context, botID, updateID int6
 	if err != nil {
 		// A concurrent ingest may have won one of the two unique dedupe keys.
 		_ = tx.Rollback()
-		if duplicate, findErr := findInboundDelivery(s.db.QueryRowContext(ctx, existingQuery, botID, updateID, callbackID, callbackID)); findErr == nil {
+		if duplicate, findErr := s.findInboundDelivery(s.db.QueryRowContext(ctx, existingQuery, botID, updateID, callbackID, callbackID)); findErr == nil {
 			return duplicate, false, nil
 		}
 		return nil, false, err
@@ -159,11 +163,11 @@ func (s *Store) PrepareInboundDelivery(ctx context.Context, botID, updateID int6
 }
 
 func (s *Store) GetInboundDelivery(ctx context.Context, deliveryID string) (*models.InboundDelivery, error) {
-	return findInboundDelivery(s.db.QueryRowContext(ctx, inboundDeliverySelect+` WHERE d.delivery_id=?`, deliveryID))
+	return s.findInboundDelivery(s.db.QueryRowContext(ctx, inboundDeliverySelect+` WHERE d.delivery_id=?`, deliveryID))
 }
 
 func (s *Store) GetInboundDeliveryByUpdate(ctx context.Context, botID, updateID int64) (*models.InboundDelivery, error) {
-	return findInboundDelivery(s.db.QueryRowContext(ctx, inboundDeliverySelect+` WHERE d.bot_id=? AND d.update_id=?`, botID, updateID))
+	return s.findInboundDelivery(s.db.QueryRowContext(ctx, inboundDeliverySelect+` WHERE d.bot_id=? AND d.update_id=?`, botID, updateID))
 }
 
 func (s *Store) SetInboundStreamID(ctx context.Context, deliveryID, streamID string) error {

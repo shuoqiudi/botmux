@@ -103,9 +103,30 @@ func (s *Server) validateTelegramChat(token string, chatID int64) (telegramChat,
 }
 
 func writeBusinessError(w http.ResponseWriter, status int, code string, err error) {
+	message := err.Error()
+	if code == "telegram_validation_failed" {
+		message = "Telegram credential or destination validation failed"
+	}
+	if code == "storage_error" {
+		message = "Gateway configuration could not be stored"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": err.Error()})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+}
+
+func gatewayAdminActor(r *http.Request) string {
+	if user := getAuthUser(r); user != nil {
+		return fmt.Sprintf("%s#%d", user.Username, user.ID)
+	}
+	return "unknown"
+}
+
+func mustGatewayDestinations(values []models.TelegramDestination, err error) []models.TelegramDestination {
+	if err != nil {
+		return nil
+	}
+	return values
 }
 
 func itemID(path, _ string) int64 {
@@ -116,9 +137,10 @@ func itemID(path, _ string) int64 {
 }
 
 type botAccountInput struct {
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
-	Token string `json:"token"`
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Token            string `json:"token"`
+	ExpectedRevision int64  `json:"expected_revision"`
 }
 
 func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +179,7 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			account, _ := s.store.GetBotAccount(id)
+			_ = s.store.RecordGatewayAudit(0, account.Revision, gatewayAdminActor(r), "bot_account.create", map[string]any{"bot_account_id": id, "token_configured": true})
 			w.WriteHeader(http.StatusCreated)
 			writeJSON(w, account)
 			return
@@ -171,19 +194,54 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		username := existing.Username
+		nativeBotIDs, _ := s.store.NativeBotIDsForGatewayAccount(id)
 		if input.Token != "" {
 			identity, err := s.validateTelegramIdentity(input.Token)
 			if err != nil {
+				_ = s.store.RecordGatewayAudit(0, existing.Revision, gatewayAdminActor(r), "bot_token.validate", map[string]any{"bot_account_id": id, "success": false})
 				writeBusinessError(w, 422, "telegram_validation_failed", err)
 				return
 			}
 			username = identity.Username
+			for _, destination := range mustGatewayDestinations(s.store.GetTelegramDestinations()) {
+				if destination.BotAccountID == id {
+					if _, err := s.validateTelegramChat(input.Token, destination.ChatID); err != nil {
+						_ = s.store.RecordGatewayAudit(0, existing.Revision, gatewayAdminActor(r), "bot_token.validate", map[string]any{"bot_account_id": id, "success": false})
+						writeBusinessError(w, 422, "telegram_validation_failed", err)
+						return
+					}
+				}
+			}
 		}
-		if err := s.store.UpdateBotAccount(models.BotAccount{ID: id, Name: input.Name, Username: username, Token: input.Token}); err != nil {
+		expected := input.ExpectedRevision
+		if expected == 0 {
+			expected = existing.Revision
+		}
+		if err := s.store.RotateBotAccount(id, expected, input.Name, username, input.Token, gatewayAdminActor(r)); err != nil {
+			if errors.Is(err, store.ErrRevisionConflict) {
+				writeBusinessError(w, 409, "revision_conflict", err)
+				return
+			}
 			writeBusinessError(w, 500, "storage_error", err)
 			return
 		}
+		runtimeStatus := "active"
+		for _, nativeID := range nativeBotIDs {
+			if s.proxy == nil {
+				break
+			}
+			s.proxy.StopBot(nativeID)
+			s.proxy.UnregisterManagedBot(nativeID)
+			if err := s.proxy.RestartBot(nativeID); err == nil {
+				if b := s.proxy.GetManagedBot(nativeID); b != nil {
+					s.RegisterBot(nativeID, b)
+				}
+			} else {
+				runtimeStatus = "degraded"
+			}
+		}
 		account, _ := s.store.GetBotAccount(id)
+		account.RuntimeStatus = runtimeStatus
 		writeJSON(w, account)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -191,10 +249,11 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 type destinationInput struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	BotAccountID int64  `json:"bot_account_id"`
-	ChatID       int64  `json:"chat_id"`
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	BotAccountID     int64  `json:"bot_account_id"`
+	ChatID           int64  `json:"chat_id"`
+	ExpectedRevision int64  `json:"expected_revision"`
 }
 
 func destinationTitle(chat telegramChat) string {
@@ -257,6 +316,7 @@ func (s *Server) handleTelegramDestinations(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		stored, _ := s.store.GetTelegramDestination(id)
+		_ = s.store.RecordGatewayAudit(0, stored.Revision, gatewayAdminActor(r), "destination.create", map[string]any{"destination_id": id, "validated": true})
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, stored)
 		return
@@ -265,11 +325,20 @@ func (s *Server) handleTelegramDestinations(w http.ResponseWriter, r *http.Reque
 		writeBusinessError(w, 400, "invalid_request", errors.New("id is required"))
 		return
 	}
-	if _, err := s.store.GetTelegramDestination(input.ID); err != nil {
+	existing, err := s.store.GetTelegramDestination(input.ID)
+	if err != nil {
 		writeBusinessError(w, 404, "not_found", errors.New("destination not found"))
 		return
 	}
-	if err := s.store.UpdateTelegramDestination(destination); err != nil {
+	expected := input.ExpectedRevision
+	if expected == 0 {
+		expected = existing.Revision
+	}
+	if err := s.store.MigrateTelegramDestination(destination, expected, gatewayAdminActor(r)); err != nil {
+		if errors.Is(err, store.ErrRevisionConflict) {
+			writeBusinessError(w, 409, "revision_conflict", err)
+			return
+		}
 		writeBusinessError(w, 500, "storage_error", err)
 		return
 	}
@@ -288,6 +357,7 @@ type businessRouteInput struct {
 	OutboundEnabled     bool     `json:"outbound_enabled"`
 	AllowedCallers      []string `json:"allowed_callers"`
 	Enabled             *bool    `json:"enabled"`
+	ExpectedRevision    int64    `json:"expected_revision"`
 }
 
 func normalizeRouteInput(input businessRouteInput, creating bool) (models.BusinessRoute, error) {
@@ -301,7 +371,7 @@ func normalizeRouteInput(input businessRouteInput, creating bool) (models.Busine
 	}
 	if input.InboundEnabled {
 		u, err := url.ParseRequestURI(input.InboundBackendURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			return models.BusinessRoute{}, errors.New("a valid inbound_backend_url is required when inbound is enabled")
 		}
 	}
@@ -406,6 +476,11 @@ func (s *Server) handleBusinessRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.validateRoute(&route); err != nil {
+		if key != "" {
+			if prior, priorErr := s.store.GetBusinessRoute(key); priorErr == nil {
+				_ = s.store.RecordGatewayAudit(prior.ID, prior.Revision, gatewayAdminActor(r), "route.validate", map[string]any{"success": false})
+			}
+		}
 		writeBusinessError(w, 422, "telegram_validation_failed", err)
 		return
 	}
@@ -415,6 +490,7 @@ func (s *Server) handleBusinessRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stored, _ := s.store.GetBusinessRoute(route.RouteKey)
+		_ = s.store.RecordGatewayAudit(stored.ID, stored.Revision, gatewayAdminActor(r), "route.create", map[string]any{"inbound_enabled": stored.InboundEnabled, "outbound_enabled": stored.OutboundEnabled, "enabled": stored.Enabled, "validated": true})
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, stored)
 		return
@@ -430,9 +506,17 @@ func (s *Server) handleBusinessRoutes(w http.ResponseWriter, r *http.Request) {
 	if route.InboundBackendToken == "" {
 		route.InboundBackendToken = existing.InboundBackendToken
 	}
-	if err := s.store.UpdateBusinessRoute(key, route); err != nil {
+	expected := input.ExpectedRevision
+	if expected == 0 {
+		expected = existing.Revision
+	}
+	if err := s.store.UpdateBusinessRouteExpected(key, route, expected, gatewayAdminActor(r)); err != nil {
 		if errors.Is(err, store.ErrRouteKeyImmutable) {
 			writeBusinessError(w, 409, "immutable_route_key", err)
+			return
+		}
+		if errors.Is(err, store.ErrRevisionConflict) {
+			writeBusinessError(w, 409, "revision_conflict", err)
 			return
 		}
 		writeBusinessError(w, 409, "storage_error", err)
@@ -499,6 +583,7 @@ func (s *Server) handleBusinessRouteSetup(w http.ResponseWriter, r *http.Request
 		writeBusinessError(w, 409, "storage_error", err)
 		return
 	}
+	_ = s.store.RecordGatewayAudit(stored.ID, stored.Revision, gatewayAdminActor(r), "route.create", map[string]any{"bot_account_created": true, "destination_created": true, "token_configured": true, "backend_credential_configured": stored.BackendCredentialSet, "validated": true})
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, stored)
 }

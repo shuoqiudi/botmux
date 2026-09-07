@@ -885,7 +885,7 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 			if msgText != "" && route.ConditionValue != "" {
 				re, err := regexp.Compile("(?i)" + route.ConditionValue)
 				if err != nil {
-					log.Printf("[routing] route id=%d has invalid text condition: %v", route.ID, err)
+					log.Printf("[routing] route id=%d has invalid text condition", route.ID)
 					continue
 				}
 				matched = re.MatchString(msgText)

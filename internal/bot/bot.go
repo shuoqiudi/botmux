@@ -51,7 +51,7 @@ func NewBot(token string, s *store.Store, botID int64, baseURL string) (*Bot, er
 		api, err = tgbotapi.NewBotAPI(token)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Telegram bot authorization failed")
 	}
 	log.Printf("Bot [%d] authorized as @%s", botID, api.Self.UserName)
 	return &Bot{api: api, store: s, botID: botID, baseURL: baseURL}, nil

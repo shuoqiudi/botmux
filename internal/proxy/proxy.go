@@ -181,6 +181,7 @@ func (e *telegramAPIError) Error() string {
 // Manager manages polling and forwarding for all bots
 type Manager struct {
 	store             *store.Store
+	runnerMu          sync.Mutex
 	mu                sync.Mutex
 	runners           map[int64]*proxyRunner
 	managedBots       map[int64]*bot.Bot     // botID -> Bot instance for management processing
@@ -427,7 +428,9 @@ func (pm *Manager) Start() {
 }
 
 func (pm *Manager) startBot(botID int64) {
-	pm.StopBot(botID)
+	pm.runnerMu.Lock()
+	defer pm.runnerMu.Unlock()
+	pm.stopBot(botID)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &proxyRunner{cancel: cancel, done: make(chan struct{}), botID: botID}
@@ -440,6 +443,12 @@ func (pm *Manager) startBot(botID int64) {
 }
 
 func (pm *Manager) StopBot(botID int64) {
+	pm.runnerMu.Lock()
+	defer pm.runnerMu.Unlock()
+	pm.stopBot(botID)
+}
+
+func (pm *Manager) stopBot(botID int64) {
 	pm.mu.Lock()
 	runner := pm.runners[botID]
 	if runner != nil {
@@ -455,6 +464,9 @@ func (pm *Manager) StopBot(botID int64) {
 }
 
 func (pm *Manager) StopAll() {
+	pm.runnerMu.Lock()
+	defer pm.runnerMu.Unlock()
+
 	pm.mu.Lock()
 	runners := make([]*proxyRunner, 0, len(pm.runners))
 	for id, runner := range pm.runners {
@@ -873,7 +885,7 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 			if msgText != "" && route.ConditionValue != "" {
 				re, err := regexp.Compile("(?i)" + route.ConditionValue)
 				if err != nil {
-					log.Printf("[routing] route id=%d invalid regex %q: %v", route.ID, route.ConditionValue, err)
+					log.Printf("[routing] route id=%d has invalid text condition: %v", route.ID, err)
 					continue
 				}
 				matched = re.MatchString(msgText)
@@ -894,8 +906,8 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 			continue
 		}
 
-		log.Printf("[routing] route id=%d MATCHED: %s=%q on bot %d → bot %d",
-			route.ID, route.ConditionType, route.ConditionValue, sourceBotID, route.TargetBotID)
+		log.Printf("[routing] route id=%d matched condition=%s on bot %d → bot %d",
+			route.ID, route.ConditionType, sourceBotID, route.TargetBotID)
 
 		pm.mu.Lock()
 		targetBot := pm.managedBots[route.TargetBotID]
@@ -919,8 +931,8 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 		var targetMsgID int
 		switch route.Action {
 		case "drop":
-			log.Printf("[routing] route id=%d DROP: %s=%q on bot %d — message ignored",
-				route.ID, route.ConditionType, route.ConditionValue, sourceBotID)
+			log.Printf("[routing] route id=%d dropped condition=%s on bot %d",
+				route.ID, route.ConditionType, sourceBotID)
 			return
 		case "forward":
 			if msgText != "" {

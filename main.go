@@ -10,9 +10,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/bridge"
+	"github.com/skrashevich/botmux/internal/gateway"
 	"github.com/skrashevich/botmux/internal/proxy"
 	"github.com/skrashevich/botmux/internal/server"
 	"github.com/skrashevich/botmux/internal/store"
@@ -52,6 +55,9 @@ func main() {
 	dbPath := flag.String("db", "botdata.db", "SQLite database path")
 	webhookURL := flag.String("webhook", "", "Set webhook URL for the CLI bot (requires -token)")
 	tgAPI := flag.String("tg-api", "", "Custom Telegram API base URL (default: https://api.telegram.org)")
+	redisAddr := flag.String("redis-addr", "", "Redis address for durable Gateway Streams (for example redis:6379)")
+	redisPasswordFile := flag.String("redis-password-file", "", "Read the Gateway Redis password from a file")
+	redisDB := flag.Int("redis-db", 0, "Redis database for durable Gateway Streams")
 	demoMode := flag.Bool("demo", false, "Enable demo mode with separate database and seeded data")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
@@ -102,6 +108,51 @@ func main() {
 	}
 
 	pm := proxy.NewManager(st, telegramAPIURL)
+	var redisClient *redis.Client
+	var inboundCancel context.CancelFunc
+	if *redisAddr != "" {
+		redisPassword := ""
+		if *redisPasswordFile != "" {
+			data, err := os.ReadFile(*redisPasswordFile)
+			if err != nil {
+				log.Fatalf("Failed to read Redis password file: %v", err)
+			}
+			redisPassword = strings.TrimSpace(string(data))
+		}
+		redisClient = redis.NewClient(&redis.Options{Addr: *redisAddr, Password: redisPassword, DB: *redisDB})
+		queue := gateway.NewRedisInboundQueue(redisClient)
+		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := redisClient.Ping(checkCtx).Err()
+		if err == nil {
+			err = queue.VerifyDurability(checkCtx)
+		}
+		cancel()
+		if err != nil {
+			log.Fatalf("Gateway Redis is not durably available: %v", err)
+		}
+		inbound := gateway.NewInbound(st, queue, nil, gateway.InboundConfig{})
+		pm.SetInboundGateway(inbound)
+		var inboundCtx context.Context
+		inboundCtx, inboundCancel = context.WithCancel(context.Background())
+		go func() {
+			for inboundCtx.Err() == nil {
+				if err := inbound.Run(inboundCtx); err != nil && inboundCtx.Err() == nil {
+					log.Printf("[gateway] inbound worker stopped; retrying")
+				}
+				select {
+				case <-inboundCtx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+	}
+	if redisClient != nil {
+		defer redisClient.Close()
+	}
+	if inboundCancel != nil {
+		defer inboundCancel()
+	}
 	srv := server.NewServer(st, pm)
 	srv.DemoMode = *demoMode
 	srv.LogBuf = logBuf

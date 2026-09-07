@@ -278,15 +278,16 @@ func (s *Server) handleTelegramDestinations(w http.ResponseWriter, r *http.Reque
 }
 
 type businessRouteInput struct {
-	RouteKey          string   `json:"route_key"`
-	DisplayName       string   `json:"display_name"`
-	BotAccountID      int64    `json:"bot_account_id"`
-	DestinationID     int64    `json:"destination_id"`
-	InboundEnabled    bool     `json:"inbound_enabled"`
-	InboundBackendURL string   `json:"inbound_backend_url"`
-	OutboundEnabled   bool     `json:"outbound_enabled"`
-	AllowedCallers    []string `json:"allowed_callers"`
-	Enabled           *bool    `json:"enabled"`
+	RouteKey            string   `json:"route_key"`
+	DisplayName         string   `json:"display_name"`
+	BotAccountID        int64    `json:"bot_account_id"`
+	DestinationID       int64    `json:"destination_id"`
+	InboundEnabled      bool     `json:"inbound_enabled"`
+	InboundBackendURL   string   `json:"inbound_backend_url"`
+	InboundBackendToken string   `json:"inbound_backend_token"`
+	OutboundEnabled     bool     `json:"outbound_enabled"`
+	AllowedCallers      []string `json:"allowed_callers"`
+	Enabled             *bool    `json:"enabled"`
 }
 
 func normalizeRouteInput(input businessRouteInput, creating bool) (models.BusinessRoute, error) {
@@ -312,7 +313,8 @@ func normalizeRouteInput(input businessRouteInput, creating bool) (models.Busine
 	}
 	return models.BusinessRoute{RouteKey: input.RouteKey, DisplayName: input.DisplayName, BotAccountID: input.BotAccountID,
 		DestinationID: input.DestinationID, InboundEnabled: input.InboundEnabled, InboundBackendURL: strings.TrimSpace(input.InboundBackendURL),
-		OutboundEnabled: input.OutboundEnabled, AllowedCallers: input.AllowedCallers, Enabled: enabled}, nil
+		InboundBackendToken: strings.TrimSpace(input.InboundBackendToken),
+		OutboundEnabled:     input.OutboundEnabled, AllowedCallers: input.AllowedCallers, Enabled: enabled}, nil
 }
 
 func (s *Server) validateRoute(route *models.BusinessRoute) error {
@@ -420,9 +422,13 @@ func (s *Server) handleBusinessRoutes(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		key = route.RouteKey
 	}
-	if _, err := s.store.GetBusinessRoute(key); err != nil {
+	existing, err := s.store.GetBusinessRoute(key)
+	if err != nil {
 		writeBusinessError(w, 404, "not_found", errors.New("business route not found"))
 		return
+	}
+	if route.InboundBackendToken == "" {
+		route.InboundBackendToken = existing.InboundBackendToken
 	}
 	if err := s.store.UpdateBusinessRoute(key, route); err != nil {
 		if errors.Is(err, store.ErrRouteKeyImmutable) {

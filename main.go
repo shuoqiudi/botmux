@@ -47,6 +47,7 @@ var telegramAPIURL = "https://api.telegram.org"
 // @description API key authentication. Use "Bearer bmx_..." format.
 func main() {
 	token := flag.String("token", "", "Telegram bot token (optional if bots already exist in DB)")
+	tokenFile := flag.String("token-file", "", "Read the Telegram bot token from a file")
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	dbPath := flag.String("db", "botdata.db", "SQLite database path")
 	webhookURL := flag.String("webhook", "", "Set webhook URL for the CLI bot (requires -token)")
@@ -60,9 +61,11 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *token == "" {
-		*token = os.Getenv("TELEGRAM_BOT_TOKEN")
+	resolvedToken, err := resolveTelegramToken(*token, *tokenFile, os.Getenv("TELEGRAM_BOT_TOKEN"))
+	if err != nil {
+		log.Fatalf("Failed to load Telegram bot token: %v", err)
 	}
+	*token = resolvedToken
 
 	if *tgAPI == "" {
 		*tgAPI = os.Getenv("TELEGRAM_API_URL")
@@ -80,7 +83,7 @@ func main() {
 	if *demoMode {
 		telegramAPIURL = "https://telegram-bot-api.exe.xyz"
 		log.Printf("Demo mode enabled. Telegram API: %s", telegramAPIURL)
-		log.Printf("Login with demo:demo")
+		log.Printf("Demo credentials are enabled")
 		*dbPath = "demo.db"
 	}
 
@@ -163,4 +166,30 @@ func main() {
 		log.Fatalf("Server failed: %v", err)
 	}
 	log.Printf("shutdown: complete")
+}
+
+func resolveTelegramToken(flagToken, tokenFile, environmentToken string) (string, error) {
+	if flagToken != "" && tokenFile != "" {
+		return "", fmt.Errorf("-token and -token-file cannot be used together")
+	}
+	if tokenFile == "" {
+		if flagToken != "" {
+			return flagToken, nil
+		}
+		return environmentToken, nil
+	}
+
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read token file: %w", err)
+	}
+	token := strings.TrimSuffix(string(data), "\n")
+	token = strings.TrimSuffix(token, "\r")
+	if token == "" {
+		return "", fmt.Errorf("token file is empty")
+	}
+	if strings.ContainsAny(token, "\r\n") {
+		return "", fmt.Errorf("token file must contain exactly one line")
+	}
+	return token, nil
 }

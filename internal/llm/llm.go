@@ -107,8 +107,8 @@ func (r *Router) RouteMessage(ctx context.Context, sourceBotID int64, messageTex
 		return nil, err
 	}
 
-	log.Printf("[llm-router] routed message from bot %d chat %d: target_bot=%d target_chat=%d action=%s reason=%s",
-		sourceBotID, chatID, result.TargetBotID, result.TargetChatID, result.Action, result.Reason)
+	log.Printf("[llm-router] routed message from bot %d: target_bot=%d action=%s",
+		sourceBotID, result.TargetBotID, result.Action)
 
 	return result, nil
 }

@@ -2995,16 +2995,9 @@ func (s *Server) handleTelegramAPIProxy(w http.ResponseWriter, r *http.Request) 
 		method = InferTelegramMethod(reqBody)
 	}
 
-	// Log incoming request
-	maskedToken := botToken
-	if len(maskedToken) > 8 {
-		maskedToken = maskedToken[:4] + "..." + maskedToken[len(maskedToken)-4:]
-	}
-	bodyPreview := string(reqBody)
-	if len(bodyPreview) > 512 {
-		bodyPreview = bodyPreview[:512] + "..."
-	}
-	log.Printf("[tgapi-proxy] %s %s bot=%s path=%s body=%s", r.Method, method, maskedToken, r.URL.Path, bodyPreview)
+	// The request path contains the bot token and the body may contain chat IDs
+	// or message text. Keep only operation metadata in logs.
+	log.Printf("[tgapi-proxy] %s %s body_bytes=%d", r.Method, method, len(reqBody))
 
 	// Forward to Telegram
 	tgURL := fmt.Sprintf("%s/bot%s/%s", s.tgAPIURL(), botToken, method)
@@ -3018,8 +3011,8 @@ func (s *Server) handleTelegramAPIProxy(w http.ResponseWriter, r *http.Request) 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(tgReq)
 	if err != nil {
-		log.Printf("[tgapi-proxy] %s FAILED: %v", method, err)
-		http.Error(w, fmt.Sprintf("Telegram API error: %v", err), 502)
+		log.Printf("[tgapi-proxy] %s failed", method)
+		http.Error(w, "Telegram API request failed", 502)
 		return
 	}
 	defer resp.Body.Close()
@@ -3216,24 +3209,19 @@ func (s *Server) handleInterceptSetWebhook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	maskedToken := botToken
-	if len(maskedToken) > 8 {
-		maskedToken = maskedToken[:4] + "..." + maskedToken[len(maskedToken)-4:]
-	}
-
 	// Find or auto-register bot. Auto-register is gated by BOTMUX_ALLOW_AUTO_REGISTER=1
 	// to prevent any attacker who phished a bot token from redirecting its updates
 	// through the service. Default: reject unknown tokens with 401.
 	botCfg, err := s.store.GetBotConfigByToken(botToken)
 	if err != nil {
 		if os.Getenv("BOTMUX_ALLOW_AUTO_REGISTER") != "1" {
-			log.Printf("[tgapi-proxy] setWebhook: rejected unknown bot=%s (auto-register disabled)", maskedToken)
+			log.Printf("[tgapi-proxy] setWebhook: rejected unknown bot (auto-register disabled)")
 			writeJSON(w, map[string]any{"ok": false, "error_code": 401, "description": "Unauthorized: bot not registered; set BOTMUX_ALLOW_AUTO_REGISTER=1 to allow auto-registration"})
 			return
 		}
 		botCfg, err = s.autoRegisterBot(botToken)
 		if err != nil {
-			log.Printf("[tgapi-proxy] setWebhook: failed to auto-register bot=%s: %v", maskedToken, err)
+			log.Printf("[tgapi-proxy] setWebhook: failed to auto-register bot")
 			writeJSON(w, map[string]any{"ok": false, "error_code": 401, "description": "Unauthorized: invalid bot token"})
 			return
 		}
@@ -3262,20 +3250,15 @@ func (s *Server) handleInterceptSetWebhook(w http.ResponseWriter, r *http.Reques
 		s.proxy.RestartBot(botCfg.ID)
 	}
 
-	log.Printf("[tgapi-proxy] setWebhook intercepted: bot=%s webhook_url=%s (proxy mode)", maskedToken, webhookURL)
+	log.Printf("[tgapi-proxy] setWebhook intercepted: botID=%d (proxy mode)", botCfg.ID)
 	writeJSON(w, map[string]any{"ok": true, "result": true, "description": "Webhook was set"})
 }
 
 // handleInterceptDeleteWebhook intercepts deleteWebhook and disables proxy forwarding in botmux.
 func (s *Server) handleInterceptDeleteWebhook(w http.ResponseWriter, r *http.Request, botToken string) {
-	maskedToken := botToken
-	if len(maskedToken) > 8 {
-		maskedToken = maskedToken[:4] + "..." + maskedToken[len(maskedToken)-4:]
-	}
-
 	botCfg, err := s.store.GetBotConfigByToken(botToken)
 	if err != nil {
-		log.Printf("[tgapi-proxy] deleteWebhook: bot=%s not found", maskedToken)
+		log.Printf("[tgapi-proxy] deleteWebhook: bot not found")
 		writeJSON(w, map[string]any{"ok": true, "result": true, "description": "Webhook was deleted"})
 		return
 	}
@@ -3313,7 +3296,7 @@ func (s *Server) handleInterceptDeleteWebhook(w http.ResponseWriter, r *http.Req
 		s.proxy.RestartBot(botCfg.ID)
 	}
 
-	log.Printf("[tgapi-proxy] deleteWebhook intercepted: bot=%s (proxy disabled)", maskedToken)
+	log.Printf("[tgapi-proxy] deleteWebhook intercepted: botID=%d (proxy disabled)", botCfg.ID)
 	writeJSON(w, map[string]any{"ok": true, "result": true, "description": "Webhook was deleted"})
 }
 
@@ -3350,7 +3333,7 @@ func (s *Server) autoRegisterBot(token string) (*models.BotConfig, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(getMeURL)
 	if err != nil {
-		return nil, fmt.Errorf("getMe request failed: %w", err)
+		return nil, fmt.Errorf("getMe request failed")
 	}
 	defer resp.Body.Close()
 
@@ -3379,11 +3362,7 @@ func (s *Server) autoRegisterBot(token string) (*models.BotConfig, error) {
 	}
 	botCfg.ID = id
 
-	maskedToken := token
-	if len(maskedToken) > 8 {
-		maskedToken = maskedToken[:4] + "..." + maskedToken[len(maskedToken)-4:]
-	}
-	log.Printf("[tgapi-proxy] auto-registered bot: id=%d username=@%s token=%s", id, botCfg.BotUsername, maskedToken)
+	log.Printf("[tgapi-proxy] auto-registered bot: id=%d username=@%s", id, botCfg.BotUsername)
 	return &botCfg, nil
 }
 
@@ -3498,11 +3477,7 @@ func (s *Server) handleTelegramFileProxy(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	maskedToken := botToken
-	if len(maskedToken) > 8 {
-		maskedToken = maskedToken[:4] + "..." + maskedToken[len(maskedToken)-4:]
-	}
-	log.Printf("[tgapi-file] GET bot=%s path=%s", maskedToken, remotePath)
+	log.Printf("[tgapi-file] GET path=%s", remotePath)
 
 	downloadURL := fmt.Sprintf("%s/file/bot%s/%s", s.tgAPIURL(), botToken, remotePath)
 	proxyFileDownload(w, r, downloadURL, remotePath, 0)
@@ -3649,9 +3624,9 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 		VideoNote *struct {
 			FileID string `json:"file_id"`
 		} `json:"video_note"`
-		LivePhoto   map[string]any  `json:"live_photo"`
-		RichMessage map[string]any  `json:"rich_message"`
-		SenderTag   string          `json:"sender_tag"`
+		LivePhoto   map[string]any `json:"live_photo"`
+		RichMessage map[string]any `json:"rich_message"`
+		SenderTag   string         `json:"sender_tag"`
 	}
 	if err := json.Unmarshal(resp.Result, &msg); err != nil || msg.MessageID == 0 {
 		return
@@ -3717,8 +3692,7 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 	if err := s.store.SaveMessage(m); err != nil {
 		log.Printf("[tgapi-proxy] Failed to save sent message: %v", err)
 	} else {
-		log.Printf("[tgapi-proxy] Captured %s: msg_id=%d chat_id=%d from=%s text=%q",
-			method, msg.MessageID, msg.Chat.ID, fromUser, truncateStr(text, 80))
+		log.Printf("[tgapi-proxy] Captured %s: msg_id=%d", method, msg.MessageID)
 	}
 
 	// Also track the chat if we have a bot for this token
@@ -3784,8 +3758,8 @@ func (s *Server) CaptureCopiedMessage(token string, reqBody []byte, contentType 
 		return
 	}
 
-	log.Printf("[tgapi-proxy] Captured copyMessage: msg_id=%d chat_id=%d source_chat_id=%d source_msg_id=%d text=%q",
-		resp.Result.MessageID, params.ChatID, params.FromChatID, params.MessageID, truncateStr(text, 80))
+	log.Printf("[tgapi-proxy] Captured copyMessage: msg_id=%d source_msg_id=%d",
+		resp.Result.MessageID, params.MessageID)
 }
 
 func (s *Server) findBotByToken(token string) *models.BotConfig {

@@ -1,12 +1,15 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +18,65 @@ import (
 	"github.com/skrashevich/botmux/internal/auth"
 	"github.com/skrashevich/botmux/internal/models"
 )
+
+func TestE2E_Updates_PushProxyDeliversWithoutSensitiveLogs(t *testing.T) {
+	h := setupE2E(t)
+
+	backendReceived := make(chan map[string]any, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var update map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			t.Errorf("decode pushed update: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		backendReceived <- update
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	const token = "push-secret-token"
+	const chatID = int64(77123456789)
+	botID := h.AddBot(models.BotConfig{
+		Token:        token,
+		Name:         "pushbot",
+		ProxyEnabled: true,
+		BackendURL:   backend.URL,
+	})
+	update := map[string]any{
+		"update_id": float64(42),
+		"message": map[string]any{
+			"message_id": float64(7),
+			"text":       "sensitive message text",
+			"chat":       map[string]any{"id": float64(chatID)},
+		},
+	}
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	if acknowledged := h.proxy.ProcessUpdate(botID, update); !acknowledged {
+		t.Fatal("successful backend delivery was not acknowledged")
+	}
+	select {
+	case got := <-backendReceived:
+		if got["update_id"] != float64(42) {
+			t.Fatal("backend received an unexpected update_id")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backend did not receive pushed update")
+	}
+
+	logText := logs.String()
+	for _, secret := range []string{token, fmt.Sprint(chatID), "sensitive message text"} {
+		if strings.Contains(logText, secret) {
+			t.Fatal("push proxy log exposed sensitive Telegram data")
+		}
+	}
+}
 
 // pollAPI sends a GET to /api/updates/poll with the given query params and returns the decoded body.
 func pollAPI(t *testing.T, h *e2eHarness, botID int64, offset, limit, timeout int) map[string]any {

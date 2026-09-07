@@ -169,9 +169,19 @@ func (e *rateLimitError) Error() string {
 	return fmt.Sprintf("rate limited, retry after %s: %s", e.After, e.Description)
 }
 
+type telegramAPIError struct {
+	Code        int
+	Description string
+}
+
+func (e *telegramAPIError) Error() string {
+	return fmt.Sprintf("API error %d: %s", e.Code, e.Description)
+}
+
 // Manager manages polling and forwarding for all bots
 type Manager struct {
 	store             *store.Store
+	runnerMu          sync.Mutex
 	mu                sync.Mutex
 	runners           map[int64]*proxyRunner
 	managedBots       map[int64]*bot.Bot     // botID -> Bot instance for management processing
@@ -186,6 +196,7 @@ type Manager struct {
 
 type proxyRunner struct {
 	cancel context.CancelFunc
+	done   chan struct{}
 	botID  int64
 }
 
@@ -417,40 +428,58 @@ func (pm *Manager) Start() {
 }
 
 func (pm *Manager) startBot(botID int64) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	if r, ok := pm.runners[botID]; ok {
-		log.Printf("[proxy] startBot: cancelling existing runner for botID=%d", botID)
-		r.cancel()
-		delete(pm.runners, botID)
-	}
+	pm.runnerMu.Lock()
+	defer pm.runnerMu.Unlock()
+	pm.stopBot(botID)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	pm.runners[botID] = &proxyRunner{cancel: cancel, botID: botID}
+	runner := &proxyRunner{cancel: cancel, done: make(chan struct{}), botID: botID}
+	pm.mu.Lock()
+	pm.runners[botID] = runner
+	pm.mu.Unlock()
 	log.Printf("[proxy] startBot: launched pollLoop for botID=%d", botID)
 
-	go pm.pollLoop(ctx, botID)
+	go pm.pollLoop(ctx, runner)
 }
 
 func (pm *Manager) StopBot(botID int64) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.runnerMu.Lock()
+	defer pm.runnerMu.Unlock()
+	pm.stopBot(botID)
+}
 
-	if r, ok := pm.runners[botID]; ok {
+func (pm *Manager) stopBot(botID int64) {
+	pm.mu.Lock()
+	runner := pm.runners[botID]
+	if runner != nil {
 		log.Printf("[proxy] stopBot: stopping botID=%d", botID)
-		r.cancel()
 		delete(pm.runners, botID)
+	}
+	pm.mu.Unlock()
+
+	if runner != nil {
+		runner.cancel()
+		<-runner.done
 	}
 }
 
 func (pm *Manager) StopAll() {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.runnerMu.Lock()
+	defer pm.runnerMu.Unlock()
 
-	for id, r := range pm.runners {
-		r.cancel()
+	pm.mu.Lock()
+	runners := make([]*proxyRunner, 0, len(pm.runners))
+	for id, runner := range pm.runners {
+		runners = append(runners, runner)
 		delete(pm.runners, id)
+	}
+	pm.mu.Unlock()
+
+	for _, runner := range runners {
+		runner.cancel()
+	}
+	for _, runner := range runners {
+		<-runner.done
 	}
 	log.Printf("[proxy] StopAll: all runners stopped")
 }
@@ -533,7 +562,17 @@ func (pm *Manager) RestartBot(botID int64) error {
 	return nil
 }
 
-func (pm *Manager) pollLoop(ctx context.Context, botID int64) {
+func (pm *Manager) pollLoop(ctx context.Context, runner *proxyRunner) {
+	botID := runner.botID
+	defer func() {
+		pm.mu.Lock()
+		if pm.runners[botID] == runner {
+			delete(pm.runners, botID)
+		}
+		pm.mu.Unlock()
+		close(runner.done)
+	}()
+
 	retryDelay := pm.retryDelayInitial
 	maxRetryDelay := pm.retryDelayMax
 	lastHealthCheck := time.Time{}
@@ -585,7 +624,16 @@ func (pm *Manager) pollLoop(ctx context.Context, botID int64) {
 
 		updates, err := pm.getUpdates(ctx, b.Token, b.Offset, timeout)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			pm.store.UpdateBotStatus(botID, fmt.Sprintf("getUpdates error: %v", err), "")
+
+			var apiErr *telegramAPIError
+			if errors.As(err, &apiErr) && apiErr.Code == http.StatusConflict {
+				log.Printf("[proxy] pollLoop: botID=%d polling ownership conflict; stopping local poller", botID)
+				return
+			}
 
 			// Honor Telegram's retry_after on 429 (rate limit). Short exponential
 			// backoff would hammer the API and extend the flood ban.
@@ -754,8 +802,8 @@ func (pm *Manager) applyLLMRoutes(botID int64, rawUpdate map[string]any) {
 				log.Printf("[llm-routing] forward FAILED: %v", err)
 			} else {
 				targetMsgID = sentID
-				log.Printf("[llm-routing] forwarded text to bot %d chat %d (msg %d), reason: %s",
-					result.TargetBotID, destChatID, sentID, result.Reason)
+				log.Printf("[llm-routing] forwarded text to bot %d (msg %d)",
+					result.TargetBotID, sentID)
 			}
 		}
 	case "copy":
@@ -765,8 +813,8 @@ func (pm *Manager) applyLLMRoutes(botID int64, rawUpdate map[string]any) {
 				log.Printf("[llm-routing] copy FAILED: %v", err)
 			} else {
 				targetMsgID = sentID
-				log.Printf("[llm-routing] copied msg to bot %d chat %d (msg %d), reason: %s",
-					result.TargetBotID, destChatID, sentID, result.Reason)
+				log.Printf("[llm-routing] copied msg to bot %d (msg %d)",
+					result.TargetBotID, sentID)
 			}
 		}
 	default:
@@ -837,7 +885,7 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 			if msgText != "" && route.ConditionValue != "" {
 				re, err := regexp.Compile("(?i)" + route.ConditionValue)
 				if err != nil {
-					log.Printf("[routing] route id=%d invalid regex %q: %v", route.ID, route.ConditionValue, err)
+					log.Printf("[routing] route id=%d has invalid text condition", route.ID)
 					continue
 				}
 				matched = re.MatchString(msgText)
@@ -858,8 +906,8 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 			continue
 		}
 
-		log.Printf("[routing] route id=%d MATCHED: %s=%q on bot %d → bot %d",
-			route.ID, route.ConditionType, route.ConditionValue, sourceBotID, route.TargetBotID)
+		log.Printf("[routing] route id=%d matched condition=%s on bot %d → bot %d",
+			route.ID, route.ConditionType, sourceBotID, route.TargetBotID)
 
 		pm.mu.Lock()
 		targetBot := pm.managedBots[route.TargetBotID]
@@ -883,8 +931,8 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 		var targetMsgID int
 		switch route.Action {
 		case "drop":
-			log.Printf("[routing] route id=%d DROP: %s=%q on bot %d — message ignored",
-				route.ID, route.ConditionType, route.ConditionValue, sourceBotID)
+			log.Printf("[routing] route id=%d dropped condition=%s on bot %d",
+				route.ID, route.ConditionType, sourceBotID)
 			return
 		case "forward":
 			if msgText != "" {
@@ -893,7 +941,7 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 					log.Printf("[routing] route id=%d forward FAILED: %v", route.ID, err)
 				} else {
 					targetMsgID = sentID
-					log.Printf("[routing] route id=%d forwarded to chat %d via bot %d (msg %d)", route.ID, destChatID, route.TargetBotID, sentID)
+					log.Printf("[routing] route id=%d forwarded via bot %d (msg %d)", route.ID, route.TargetBotID, sentID)
 				}
 			}
 		case "copy":
@@ -903,7 +951,7 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 					log.Printf("[routing] route id=%d copy FAILED: %v", route.ID, err)
 				} else {
 					targetMsgID = sentID
-					log.Printf("[routing] route id=%d copied msg %d to chat %d via bot %d (msg %d)", route.ID, sourceMsgID, destChatID, route.TargetBotID, sentID)
+					log.Printf("[routing] route id=%d copied msg %d via bot %d (msg %d)", route.ID, sourceMsgID, route.TargetBotID, sentID)
 				}
 			}
 		}
@@ -920,8 +968,8 @@ func (pm *Manager) applyRoutes(sourceBotID int64, rawUpdate map[string]any) {
 				TargetMsgID:  targetMsgID,
 				CreatedAt:    time.Now().Format(time.RFC3339),
 			})
-			log.Printf("[routing] saved mapping: bot%d/chat%d/msg%d ↔ bot%d/chat%d/msg%d",
-				sourceBotID, chatID, sourceMsgID, route.TargetBotID, destChatID, targetMsgID)
+			log.Printf("[routing] saved mapping: source_bot=%d source_msg=%d target_bot=%d target_msg=%d",
+				sourceBotID, sourceMsgID, route.TargetBotID, targetMsgID)
 		}
 	}
 }
@@ -998,14 +1046,14 @@ func (pm *Manager) applyReverseRoutes(botID int64, rawUpdate map[string]any) {
 		// Fallback: send without reply if original message is too old
 		sentID, sendErr = sourceBot.SendMessageGetID(mapping.SourceChatID, msgText)
 		if sendErr != nil {
-			log.Printf("[routing-reverse] FAILED to send reply via bot %d to chat %d: %v",
-				mapping.SourceBotID, mapping.SourceChatID, sendErr)
+			log.Printf("[routing-reverse] failed to send reply via bot %d: %v",
+				mapping.SourceBotID, sendErr)
 			return
 		}
 	}
 
-	log.Printf("[routing-reverse] bot%d/chat%d → bot%d/chat%d (reply to msg %d, sent msg %d)",
-		botID, chatID, mapping.SourceBotID, mapping.SourceChatID, mapping.SourceMsgID, sentID)
+	log.Printf("[routing-reverse] bot%d → bot%d (reply to msg %d, sent msg %d)",
+		botID, mapping.SourceBotID, mapping.SourceMsgID, sentID)
 
 	// Save reverse mapping so the conversation can continue
 	var thisMsgID int
@@ -1034,10 +1082,6 @@ func (pm *Manager) getUpdates(ctx context.Context, token string, offset int64, t
 		"allowed_updates": bot.AllowedUpdateTypes,
 	})
 
-	maskedToken := token
-	if len(token) > 8 {
-		maskedToken = token[:8] + "..."
-	}
 	url := fmt.Sprintf("%s/bot%s/getUpdates", pm.tgAPIBaseURL, token)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
@@ -1048,7 +1092,7 @@ func (pm *Manager) getUpdates(ctx context.Context, token string, offset int64, t
 	client := &http.Client{Timeout: time.Duration(timeout+10) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getUpdates request failed")
 	}
 	defer resp.Body.Close()
 
@@ -1069,18 +1113,18 @@ func (pm *Manager) getUpdates(ctx context.Context, token string, offset int64, t
 	}
 
 	if !result.OK {
-		log.Printf("[getUpdates] ← Telegram: token=%s ok=false error=%d: %s", maskedToken, result.ErrorCode, result.Description)
+		log.Printf("[getUpdates] Telegram returned error=%d", result.ErrorCode)
 		if result.RetryAfter > 0 {
 			return nil, &rateLimitError{
 				After:       time.Duration(result.RetryAfter) * time.Second,
 				Description: result.Description,
 			}
 		}
-		return nil, fmt.Errorf("API error %d: %s", result.ErrorCode, result.Description)
+		return nil, &telegramAPIError{Code: result.ErrorCode, Description: result.Description}
 	}
 
 	if len(result.Result) > 0 {
-		log.Printf("[getUpdates] ← Telegram: token=%s updates=%d offset=%d", maskedToken, len(result.Result), offset)
+		log.Printf("[getUpdates] Telegram returned updates=%d offset=%d", len(result.Result), offset)
 	}
 
 	return result.Result, nil
@@ -1092,7 +1136,7 @@ func (pm *Manager) forwardUpdate(ctx context.Context, b *models.BotConfig, updat
 		return err
 	}
 
-	log.Printf("[proxy] forwardUpdate: POST %s (%d bytes)", b.BackendURL, len(data))
+	log.Printf("[proxy] forwardUpdate: botID=%d request_bytes=%d", b.ID, len(data))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", b.BackendURL, bytes.NewReader(data))
 	if err != nil {
@@ -1106,17 +1150,17 @@ func (pm *Manager) forwardUpdate(ctx context.Context, b *models.BotConfig, updat
 	backendClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := backendClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("backend request failed: %w", err)
+		return fmt.Errorf("backend request failed")
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	log.Printf("[proxy] forwardUpdate: backend responded %d (%d bytes): %s",
-		resp.StatusCode, len(respBody), truncate(string(respBody), 500))
+	log.Printf("[proxy] forwardUpdate: backend responded %d (%d bytes)",
+		resp.StatusCode, len(respBody))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("backend returned %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return fmt.Errorf("backend returned %d", resp.StatusCode)
 	}
 
 	pm.handleWebhookReply(b.Token, respBody)
@@ -1131,7 +1175,7 @@ func (pm *Manager) handleWebhookReply(token string, body []byte) {
 
 	var reply map[string]any
 	if err := json.Unmarshal(body, &reply); err != nil {
-		log.Printf("[proxy] handleWebhookReply: response is not JSON: %s", truncate(string(body), 200))
+		log.Printf("[proxy] handleWebhookReply: response is not JSON (%d bytes)", len(body))
 		return
 	}
 
@@ -1142,7 +1186,7 @@ func (pm *Manager) handleWebhookReply(token string, body []byte) {
 	}
 	method, ok := methodRaw.(string)
 	if !ok || method == "" {
-		log.Printf("[proxy] handleWebhookReply: 'method' field is not a valid string: %v", methodRaw)
+		log.Printf("[proxy] handleWebhookReply: 'method' field is not a valid string")
 		return
 	}
 
@@ -1158,21 +1202,21 @@ func (pm *Manager) handleWebhookReply(token string, body []byte) {
 
 	resp, err := pm.client.Post(apiURL, "application/json", bytes.NewReader(data))
 	if err != nil {
-		log.Printf("[proxy] handleWebhookReply: Telegram API call %s FAILED: %v", method, err)
+		log.Printf("[proxy] handleWebhookReply: Telegram API call %s failed", method)
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	log.Printf("[proxy] handleWebhookReply: Telegram API %s responded %d: %s",
-		method, resp.StatusCode, truncate(string(respBody), 300))
+	log.Printf("[proxy] handleWebhookReply: Telegram API %s responded %d (%d bytes)",
+		method, resp.StatusCode, len(respBody))
 }
 
 func (pm *Manager) ValidateToken(token string) (string, error) {
 	url := fmt.Sprintf("%s/bot%s/getMe", pm.tgAPIBaseURL, token)
 	resp, err := pm.client.Get(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Telegram token validation request failed")
 	}
 	defer resp.Body.Close()
 
@@ -1187,7 +1231,7 @@ func (pm *Manager) ValidateToken(token string) (string, error) {
 		return "", err
 	}
 	if !result.OK {
-		return "", fmt.Errorf("invalid token: %s", result.Description)
+		return "", fmt.Errorf("invalid Telegram token")
 	}
 	return result.Result.Username, nil
 }
@@ -1197,7 +1241,7 @@ func (pm *Manager) DeleteWebhook(token string) error {
 	url := fmt.Sprintf("%s/bot%s/deleteWebhook", pm.tgAPIBaseURL, token)
 	resp, err := pm.client.Get(url)
 	if err != nil {
-		return err
+		return fmt.Errorf("deleteWebhook request failed")
 	}
 	defer resp.Body.Close()
 
@@ -1306,23 +1350,10 @@ func summarizeUpdate(update map[string]any) string {
 	updateID, _ := update["update_id"].(float64)
 	summary := fmt.Sprintf("update_id=%d", int64(updateID))
 
-	// Message-like update types (contain text, from, chat fields)
+	// Message-like update types. Do not log message, user, or chat data.
 	for _, key := range messageLikeUpdateKeys {
-		if msg, ok := update[key].(map[string]any); ok {
+		if _, ok := update[key].(map[string]any); ok {
 			summary += " type=" + key
-			if text, ok := msg["text"].(string); ok {
-				summary += fmt.Sprintf(" text=%q", truncate(text, 80))
-			}
-			if from, ok := msg["from"].(map[string]any); ok {
-				if uname, ok := from["username"].(string); ok {
-					summary += fmt.Sprintf(" from=@%s", uname)
-				}
-			}
-			if chat, ok := msg["chat"].(map[string]any); ok {
-				if chatID, ok := chat["id"].(float64); ok {
-					summary += fmt.Sprintf(" chat_id=%d", int64(chatID))
-				}
-			}
 			return summary
 		}
 	}

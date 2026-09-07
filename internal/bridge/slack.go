@@ -290,7 +290,7 @@ func (bm *Manager) notifySlackOutgoing(cfg *models.BridgeConfig, extChatID strin
 		return
 	}
 
-	log.Printf("[bridge] id=%d slack message sent to channel=%s", cfg.ID, extChatID)
+	log.Printf("[bridge] id=%d slack message sent", cfg.ID)
 	bm.store.UpdateBridgeActivity(cfg.ID, "")
 }
 

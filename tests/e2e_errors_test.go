@@ -2,6 +2,7 @@ package tests
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -287,9 +288,8 @@ func TestE2E_Errors(t *testing.T) {
 
 	// -----------------------------------------------------------------
 	// E-08: getUpdates 409 Conflict
-	// Observed behaviour: pollLoop treats 409 the same as any other API
-	// error — logs it, retries with backoff. There is no special "stop on
-	// 409" logic. This test documents that behaviour.
+	// A 409 means another getUpdates owner exists. The local poller must stop
+	// instead of competing with it.
 	// -----------------------------------------------------------------
 	t.Run("E-08_getUpdates_409_conflict", func(t *testing.T) {
 		h := setupE2E(t, withFastBackoff())
@@ -315,9 +315,81 @@ func TestE2E_Errors(t *testing.T) {
 			t.Fatalf("RestartBot: %v", err)
 		}
 
-		// Observed behaviour: pollLoop does NOT stop on 409 — retries with backoff.
+		// Wait for the first conflict, then prove no retry was attempted.
 		h.Eventually(func() bool {
-			return h.fake.RequestsCountFor("getUpdates") >= 2
-		}, 100*time.Millisecond, "expected pollLoop to retry on 409 (does not stop)")
+			return h.fake.RequestsCountFor("getUpdates") == 1
+		}, 100*time.Millisecond, "expected the initial getUpdates conflict")
+		time.Sleep(30 * time.Millisecond)
+		if got := h.fake.RequestsCountFor("getUpdates"); got != 1 {
+			t.Fatalf("polling owner conflict retried: got %d requests, want 1", got)
+		}
 	})
+}
+
+func TestE2E_RestartWaitsForPriorPollingOwner(t *testing.T) {
+	h := setupE2E(t, withFastBackoff())
+
+	forwardStarted := make(chan struct{})
+	releaseForward := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseForward:
+		default:
+			close(releaseForward)
+		}
+	})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(forwardStarted)
+		<-releaseForward
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	const token = "restart-owner:T"
+	h.fake.RegisterBot(token, "restart_owner_bot", 10009)
+	update := loadFixture(t, "update_message_text.json")
+	update["update_id"] = float64(1)
+	h.fake.EnqueueUpdate(token, update)
+
+	botID := h.AddBot(models.BotConfig{
+		Token:        token,
+		Name:         "restart_owner_bot",
+		BotUsername:  "restart_owner_bot",
+		ProxyEnabled: true,
+		BackendURL:   backend.URL,
+	})
+	if err := h.proxy.RestartBot(botID); err != nil {
+		t.Fatalf("initial RestartBot: %v", err)
+	}
+
+	select {
+	case <-forwardStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial polling owner did not start forwarding")
+	}
+
+	restartDone := make(chan error, 1)
+	go func() {
+		restartDone <- h.proxy.RestartBot(botID)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	if got := h.fake.RequestsCountFor("getUpdates"); got != 1 {
+		t.Fatalf("replacement poller started before prior owner stopped: got %d requests", got)
+	}
+	select {
+	case err := <-restartDone:
+		t.Fatalf("RestartBot returned before prior polling owner stopped: %v", err)
+	default:
+	}
+
+	close(releaseForward)
+	select {
+	case err := <-restartDone:
+		if err != nil {
+			t.Fatalf("replacement RestartBot: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RestartBot did not start the replacement polling owner")
+	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/skrashevich/botmux/internal/auth"
 	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/bridge"
+	"github.com/skrashevich/botmux/internal/gateway"
 	"github.com/skrashevich/botmux/internal/models"
 	"github.com/skrashevich/botmux/internal/proxy"
 	"github.com/skrashevich/botmux/internal/store"
@@ -41,6 +42,7 @@ type Server struct {
 	store          *store.Store
 	proxy          *proxy.Manager
 	bridge         *bridge.Manager
+	gateway        *gateway.Service
 	mu             sync.RWMutex
 	bots           map[int64]*bot.Bot // botID -> Bot (for Telegram API calls)
 	webhookPath    string
@@ -347,6 +349,10 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/gateway/v1/routes/setup", s.adminOnly(s.handleBusinessRouteSetup))
 	mux.HandleFunc("/api/gateway/v1/routes", s.adminOnly(s.handleBusinessRoutes))
 	mux.HandleFunc("/api/gateway/v1/routes/", s.adminOnly(s.handleBusinessRoutes))
+
+	// Workload-authenticated business interface. This intentionally does not
+	// accept admin sessions or the legacy user API keys.
+	mux.HandleFunc("/api/v1/routes/", s.handleGatewayOutbound)
 
 	// Bridges — admin only for management, no auth for incoming webhook
 	mux.HandleFunc("/api/bridges", s.adminOnly(s.handleBridgeList))

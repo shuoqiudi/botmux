@@ -15,6 +15,9 @@ type Store struct {
 	db     *sql.DB
 	subsMu sync.RWMutex
 	subs   map[chan models.Message]struct{}
+	// gatewayMu keeps the small SQLite/Redis acceptance window deterministic.
+	// Native BotMux data paths remain independent.
+	gatewayMu sync.Mutex
 }
 
 func NewStore(path string) (*Store, error) {
@@ -427,6 +430,9 @@ func (s *Store) migrate() error {
 	}
 
 	if err := s.migrateBusinessRoutes(); err != nil {
+		return err
+	}
+	if err := s.migrateGatewayOutbound(); err != nil {
 		return err
 	}
 

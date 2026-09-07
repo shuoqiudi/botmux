@@ -56,7 +56,7 @@ func main() {
 	webhookURL := flag.String("webhook", "", "Set webhook URL for the CLI bot (requires -token)")
 	tgAPI := flag.String("tg-api", "", "Custom Telegram API base URL (default: https://api.telegram.org)")
 	redisAddr := flag.String("redis-addr", "", "Redis address for durable Gateway Streams (for example redis:6379)")
-	redisPasswordFile := flag.String("redis-password-file", "", "Read the Gateway Redis password from a file")
+	redisPasswordFile := flag.String("redis-password-file", "", "Read the Redis password from a file")
 	redisDB := flag.Int("redis-db", 0, "Redis database for durable Gateway Streams")
 	demoMode := flag.Bool("demo", false, "Enable demo mode with separate database and seeded data")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
@@ -108,17 +108,23 @@ func main() {
 	}
 
 	pm := proxy.NewManager(st, telegramAPIURL)
+	var outboundQueue *gateway.RedisQueue
 	var redisClient *redis.Client
 	var inboundCancel context.CancelFunc
 	if *redisAddr != "" {
-		redisPassword := ""
-		if *redisPasswordFile != "" {
-			data, err := os.ReadFile(*redisPasswordFile)
-			if err != nil {
-				log.Fatalf("Failed to read Redis password file: %v", err)
-			}
-			redisPassword = strings.TrimSpace(string(data))
+		redisPassword, err := readSingleLineFile(*redisPasswordFile)
+		if err != nil {
+			log.Fatalf("Failed to load Redis password: %v", err)
 		}
+		startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		outboundQueue, err = gateway.NewRedisQueue(startupCtx, gateway.RedisConfig{
+			Addr: *redisAddr, Password: redisPassword, DB: *redisDB,
+		})
+		startupCancel()
+		if err != nil {
+			log.Fatalf("Failed to initialize durable Gateway queue: %v", err)
+		}
+
 		redisClient = redis.NewClient(&redis.Options{Addr: *redisAddr, Password: redisPassword, DB: *redisDB})
 		queue := gateway.NewRedisInboundQueue(redisClient)
 		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -147,6 +153,9 @@ func main() {
 			}
 		}()
 	}
+	if outboundQueue != nil {
+		defer outboundQueue.Close()
+	}
 	if redisClient != nil {
 		defer redisClient.Close()
 	}
@@ -158,6 +167,15 @@ func main() {
 	srv.LogBuf = logBuf
 	srv.VersionChecker = verpkg.NewChecker(version, commit, buildDate)
 	srv.TgAPIBaseURL = telegramAPIURL
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if outboundQueue != nil {
+		gatewayService := gateway.NewService(st, outboundQueue, gateway.NewTelegramHTTPClient(telegramAPIURL), "")
+		gatewayService.Start(ctx)
+		defer gatewayService.Stop()
+		srv.SetGatewayService(gatewayService)
+	}
 
 	// Register CLI bot if token is provided
 	if *token != "" {
@@ -210,13 +228,29 @@ func main() {
 	bridgeMgr.InstallHooks()
 
 	// Graceful shutdown: SIGINT/SIGTERM triggers srv.Shutdown(15s).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	if err := srv.StartContext(ctx, *addr); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 	log.Printf("shutdown: complete")
+}
+
+func readSingleLineFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+	value := strings.TrimSuffix(string(data), "\n")
+	value = strings.TrimSuffix(value, "\r")
+	if value == "" {
+		return "", fmt.Errorf("file is empty")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("file must contain exactly one line")
+	}
+	return value, nil
 }
 
 func resolveTelegramToken(flagToken, tokenFile, environmentToken string) (string, error) {

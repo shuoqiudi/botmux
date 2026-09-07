@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -23,7 +24,14 @@ type RedisConfig struct {
 }
 
 type RedisQueue struct {
-	client *redis.Client
+	client      *redis.Client
+	stream      string
+	group       string
+	index       string
+	dlq         string
+	dlqIndex    string
+	claimMu     sync.Mutex
+	claimCursor string
 }
 
 func NewRedisQueue(ctx context.Context, config RedisConfig) (*RedisQueue, error) {
@@ -31,16 +39,21 @@ func NewRedisQueue(ctx context.Context, config RedisConfig) (*RedisQueue, error)
 		return nil, errors.New("Redis address is required")
 	}
 	client := redis.NewClient(&redis.Options{Addr: config.Addr, Password: config.Password, DB: config.DB})
-	queue := &RedisQueue{client: client}
+	queue := newRedisQueue(client, "telegram_gateway")
 	if err := queue.verify(ctx); err != nil {
 		_ = client.Close()
 		return nil, err
 	}
-	if err := client.XGroupCreateMkStream(ctx, outboundStream, outboundGroup, "0").Err(); err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+	if err := client.XGroupCreateMkStream(ctx, queue.stream, queue.group, "0").Err(); err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
 		_ = client.Close()
 		return nil, fmt.Errorf("initialize outbound stream: %w", err)
 	}
 	return queue, nil
+}
+
+func newRedisQueue(client *redis.Client, namespace string) *RedisQueue {
+	return &RedisQueue{client: client, stream: namespace + ":outbound", group: namespace + ":outbound_workers",
+		index: namespace + ":outbound:accepted", dlq: namespace + ":outbound:dlq", dlqIndex: namespace + ":outbound:dlq:index"}
 }
 
 func (q *RedisQueue) verify(ctx context.Context) error {
@@ -92,7 +105,7 @@ return stream_id
 `)
 
 func (q *RedisQueue) Append(ctx context.Context, deliveryID string) (string, error) {
-	result, err := appendOnceScript.Run(ctx, q.client, []string{outboundStream, outboundStream + ":accepted"}, deliveryID).Result()
+	result, err := appendOnceScript.Run(ctx, q.client, []string{q.stream, q.index}, deliveryID).Result()
 	if err != nil {
 		return "", err
 	}
@@ -105,7 +118,7 @@ func (q *RedisQueue) Append(ctx context.Context, deliveryID string) (string, err
 
 func (q *RedisQueue) Read(ctx context.Context, consumer string, count int64) ([]QueueMessage, error) {
 	streams, err := q.client.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group: outboundGroup, Consumer: consumer, Streams: []string{outboundStream, ">"}, Count: count, Block: time.Second,
+		Group: q.group, Consumer: consumer, Streams: []string{q.stream, ">"}, Count: count, Block: time.Second,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
 		return nil, nil
@@ -125,8 +138,60 @@ func (q *RedisQueue) Read(ctx context.Context, consumer string, count int64) ([]
 	return messages, nil
 }
 
+func (q *RedisQueue) ClaimStale(ctx context.Context, consumer string, minIdle time.Duration, count int64) ([]QueueMessage, error) {
+	q.claimMu.Lock()
+	defer q.claimMu.Unlock()
+	start := q.claimCursor
+	if start == "" {
+		start = "0-0"
+	}
+	messages, next, err := q.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream: q.stream, Group: q.group, Consumer: consumer, MinIdle: minIdle, Start: start, Count: count,
+	}).Result()
+	if errors.Is(err, redis.Nil) || (err != nil && ctx.Err() != nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	q.claimCursor = next
+	if q.claimCursor == "" {
+		q.claimCursor = "0-0"
+	}
+	result := make([]QueueMessage, 0, len(messages))
+	for _, message := range messages {
+		deliveryID, _ := message.Values["delivery_id"].(string)
+		if deliveryID != "" {
+			result = append(result, QueueMessage{ID: message.ID, DeliveryID: deliveryID})
+		}
+	}
+	return result, nil
+}
+
 func (q *RedisQueue) Ack(ctx context.Context, streamID string) error {
-	return q.client.XAck(ctx, outboundStream, outboundGroup, streamID).Err()
+	return q.client.XAck(ctx, q.stream, q.group, streamID).Err()
+}
+
+var moveOutboundToDLQ = redis.NewScript(`
+local existing = redis.call('HGET', KEYS[3], ARGV[2])
+if existing then
+  redis.call('XACK', KEYS[1], ARGV[6], ARGV[1])
+  return existing
+end
+local id = redis.call('XADD', KEYS[2], '*',
+  'delivery_id', ARGV[2],
+  'source_stream_id', ARGV[1],
+  'route_key', ARGV[3],
+  'attempt_count', ARGV[4],
+  'error_class', ARGV[5])
+redis.call('HSET', KEYS[3], ARGV[2], id)
+redis.call('XACK', KEYS[1], ARGV[6], ARGV[1])
+return id
+`)
+
+func (q *RedisQueue) MoveToDLQAndAck(ctx context.Context, message QueueMessage, metadata DLQMetadata) error {
+	return moveOutboundToDLQ.Run(ctx, q.client, []string{q.stream, q.dlq, q.dlqIndex}, message.ID, message.DeliveryID,
+		metadata.RouteKey, metadata.AttemptCount, metadata.ErrorClass, q.group).Err()
 }
 
 func (q *RedisQueue) Close() error { return q.client.Close() }

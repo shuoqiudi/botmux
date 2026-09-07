@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/skrashevich/botmux/internal/models"
 )
@@ -51,6 +52,7 @@ func (s *Store) migrateGatewayOutbound() error {
 			idempotency_key TEXT NOT NULL,
 			attempt_count INTEGER NOT NULL DEFAULT 0,
 			safe_error_class TEXT NOT NULL DEFAULT '',
+			next_attempt_at TEXT NOT NULL DEFAULT '',
 			telegram_message_id INTEGER,
 			created_at TEXT NOT NULL,
 			accepted_at TEXT NOT NULL DEFAULT '',
@@ -67,7 +69,61 @@ func (s *Store) migrateGatewayOutbound() error {
 			payload_json BLOB NOT NULL,
 			FOREIGN KEY(delivery_id) REFERENCES gateway_deliveries(id)
 		);
+		CREATE TABLE IF NOT EXISTS gateway_delivery_attempts (
+			attempt_id TEXT PRIMARY KEY,
+			delivery_id TEXT NOT NULL,
+			sequence INTEGER NOT NULL,
+			worker_id TEXT NOT NULL,
+			error_class TEXT NOT NULL DEFAULT '',
+			started_at TEXT NOT NULL,
+			ended_at TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY(delivery_id) REFERENCES gateway_deliveries(id),
+			UNIQUE(delivery_id, sequence)
+		);
+		CREATE TABLE IF NOT EXISTS gateway_dlq (
+			delivery_id TEXT PRIMARY KEY,
+			route_id INTEGER NOT NULL,
+			source_stream_id TEXT NOT NULL,
+			error_class TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL,
+			entered_at TEXT NOT NULL,
+			FOREIGN KEY(delivery_id) REFERENCES gateway_deliveries(id),
+			FOREIGN KEY(route_id) REFERENCES gateway_business_routes(id)
+		);
+		CREATE TABLE IF NOT EXISTS gateway_bot_rate_limits (
+			bot_account_id INTEGER PRIMARY KEY,
+			blocked_until TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY(bot_account_id) REFERENCES gateway_bot_accounts(id)
+		);
 	`)
+	if err != nil {
+		return err
+	}
+	// Existing Gateway databases predate retry scheduling. SQLite has no
+	// portable ADD COLUMN IF NOT EXISTS, so inspect before upgrading.
+	rows, err := s.db.Query(`PRAGMA table_info(gateway_deliveries)`)
+	if err != nil {
+		return err
+	}
+	hasNextAttempt := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		hasNextAttempt = hasNextAttempt || name == "next_attempt_at"
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !hasNextAttempt {
+		_, err = s.db.Exec(`ALTER TABLE gateway_deliveries ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''`)
+	}
 	return err
 }
 
@@ -155,7 +211,7 @@ func scanGatewayDelivery(scanner interface{ Scan(...any) error }) (*models.Gatew
 	var d models.GatewayDelivery
 	err := scanner.Scan(&d.ID, &d.RouteID, &d.RouteKey, &d.RouteRevision, &d.WorkloadID, &d.Direction,
 		&d.Action, &d.Status, &d.AttemptCount, &d.SafeErrorClass, &d.CreatedAt, &d.AcceptedAt,
-		&d.CompletedAt, &d.UpdatedAt)
+		&d.NextAttemptAt, &d.CompletedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +219,7 @@ func scanGatewayDelivery(scanner interface{ Scan(...any) error }) (*models.Gatew
 }
 
 const gatewayDeliverySelect = `SELECT d.id,d.route_id,r.route_key,d.route_revision,d.workload_id,d.direction,
-	d.action,d.status,d.attempt_count,d.safe_error_class,d.created_at,d.accepted_at,d.completed_at,d.updated_at
+	d.action,d.status,d.attempt_count,d.safe_error_class,d.created_at,d.accepted_at,d.next_attempt_at,d.completed_at,d.updated_at
 	FROM gateway_deliveries d JOIN gateway_business_routes r ON r.id=d.route_id`
 
 func (s *Store) CreateGatewayOutboundDelivery(ctx context.Context, in models.GatewayDeliveryCreate) (*models.GatewayDelivery, bool, error) {
@@ -231,42 +287,172 @@ func (s *Store) GetGatewayDeliveryForWorker(ctx context.Context, id string) (*mo
 
 func (s *Store) ResolveGatewayOutboundTarget(ctx context.Context, routeID int64) (*models.GatewayOutboundTarget, error) {
 	var target models.GatewayOutboundTarget
-	err := s.db.QueryRowContext(ctx, `SELECT r.route_key,r.enabled,r.outbound_enabled,a.token,d.chat_id
+	err := s.db.QueryRowContext(ctx, `SELECT r.route_key,a.id,r.enabled,r.outbound_enabled,a.token,d.chat_id
 		FROM gateway_business_routes r
 		JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
 		JOIN gateway_telegram_destinations d ON d.id=r.destination_id
-		WHERE r.id=?`, routeID).Scan(&target.RouteKey, &target.Enabled, &target.Outbound, &target.Token, &target.ChatID)
+		WHERE r.id=?`, routeID).Scan(&target.RouteKey, &target.BotAccountID, &target.Enabled, &target.Outbound, &target.Token, &target.ChatID)
 	if err != nil {
 		return nil, err
 	}
 	return &target, nil
 }
 
-func (s *Store) MarkGatewayDeliveryProcessing(ctx context.Context, id string) error {
+func (s *Store) BeginGatewayDeliveryAttempt(ctx context.Context, id, attemptID, workerID string) (int, error) {
 	s.gatewayMu.Lock()
 	defer s.gatewayMu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE gateway_deliveries SET status='processing',attempt_count=attempt_count+1,updated_at=?
-		WHERE id=? AND status NOT IN ('succeeded','failed')`, nowRFC3339(), id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	now := nowRFC3339()
+	result, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='processing',attempt_count=attempt_count+1,
+		next_attempt_at='',updated_at=? WHERE id=? AND status IN ('accepted','retrying')`, now, id)
+	if err != nil {
+		return 0, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if changed != 1 {
+		return 0, sql.ErrNoRows
+	}
+	var attempt int
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_count FROM gateway_deliveries WHERE id=?`, id).Scan(&attempt); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_delivery_attempts(attempt_id,delivery_id,sequence,worker_id,started_at)
+		VALUES(?,?,?,?,?)`, attemptID, id, attempt, workerID, now); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return attempt, nil
 }
 
 func (s *Store) MarkGatewayDeliverySucceeded(ctx context.Context, id string, telegramMessageID *int64) error {
 	s.gatewayMu.Lock()
 	defer s.gatewayMu.Unlock()
 	now := nowRFC3339()
-	_, err := s.db.ExecContext(ctx, `UPDATE gateway_deliveries SET status='succeeded',safe_error_class='',telegram_message_id=?,completed_at=?,updated_at=? WHERE id=?`, telegramMessageID, now, now, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE gateway_deliveries SET status='succeeded',safe_error_class='',next_attempt_at='',telegram_message_id=?,completed_at=?,updated_at=? WHERE id=?`, telegramMessageID, now, now, id)
 	return err
 }
 
-func (s *Store) MarkGatewayDeliveryFailed(ctx context.Context, id, status, safeClass string) error {
+func (s *Store) MarkGatewayDeliveryRetrying(ctx context.Context, id, attemptID, safeClass string, next time.Time) error {
 	s.gatewayMu.Lock()
 	defer s.gatewayMu.Unlock()
 	now := nowRFC3339()
-	completed := ""
-	if status == "failed" {
-		completed = now
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE gateway_deliveries SET status=?,safe_error_class=?,completed_at=?,updated_at=? WHERE id=?`, status, safeClass, completed, now, id)
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='retrying',safe_error_class=?,next_attempt_at=?,updated_at=? WHERE id=?`, safeClass, next.UTC().Format(time.RFC3339Nano), now, id); err != nil {
+		return err
+	}
+	if attemptID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE gateway_delivery_attempts SET error_class=?,ended_at=? WHERE attempt_id=?`, safeClass, now, attemptID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) MarkGatewayDeliveryReconciling(ctx context.Context, id, attemptID, safeClass string) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	now := nowRFC3339()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='reconciling',safe_error_class=?,next_attempt_at='',updated_at=? WHERE id=?`, safeClass, now, id); err != nil {
+		return err
+	}
+	if attemptID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE gateway_delivery_attempts SET error_class=?,ended_at=? WHERE attempt_id=?`, safeClass, now, attemptID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) MarkGatewayDeliveryDeadLettered(ctx context.Context, id, attemptID, sourceID, safeClass string, attempts int) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := nowRFC3339()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_dlq(delivery_id,route_id,source_stream_id,error_class,attempt_count,entered_at)
+		SELECT id,route_id,?,?,?,? FROM gateway_deliveries WHERE id=?
+		ON CONFLICT(delivery_id) DO NOTHING`, sourceID, safeClass, attempts, now, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='dead-lettered',safe_error_class=?,next_attempt_at='',completed_at=?,updated_at=? WHERE id=?`, safeClass, now, now, id); err != nil {
+		return err
+	}
+	if attemptID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE gateway_delivery_attempts SET error_class=?,ended_at=? WHERE attempt_id=?`, safeClass, now, attemptID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) CompleteGatewayDeliveryAttempt(ctx context.Context, attemptID string) error {
+	if attemptID == "" {
+		return nil
+	}
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	_, err := s.db.ExecContext(ctx, `UPDATE gateway_delivery_attempts SET ended_at=? WHERE attempt_id=?`, nowRFC3339(), attemptID)
+	return err
+}
+
+func (s *Store) GatewayBotRateLimit(ctx context.Context, botID int64) (time.Time, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM gateway_bot_rate_limits WHERE bot_account_id=?`, botID).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid stored bot rate-limit deadline: %w", err)
+	}
+	return deadline, nil
+}
+
+func (s *Store) SetGatewayBotRateLimit(ctx context.Context, botID int64, deadline time.Time) error {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	until := deadline.UTC().Format(time.RFC3339Nano)
+	var current string
+	err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM gateway_bot_rate_limits WHERE bot_account_id=?`, botID).Scan(&current)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		stored, parseErr := time.Parse(time.RFC3339Nano, current)
+		if parseErr != nil {
+			return fmt.Errorf("invalid stored bot rate-limit deadline: %w", parseErr)
+		}
+		if stored.After(deadline) {
+			return nil
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO gateway_bot_rate_limits(bot_account_id,blocked_until,updated_at)
+		VALUES(?,?,?) ON CONFLICT(bot_account_id) DO UPDATE SET
+		blocked_until=excluded.blocked_until,updated_at=excluded.updated_at`, botID, until, nowRFC3339())
 	return err
 }
 

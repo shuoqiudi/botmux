@@ -39,9 +39,14 @@ type Repository interface {
 	GetGatewayDelivery(context.Context, int64, string) (*models.GatewayDelivery, error)
 	GetGatewayDeliveryForWorker(context.Context, string) (*models.GatewayDelivery, []byte, error)
 	ResolveGatewayOutboundTarget(context.Context, int64) (*models.GatewayOutboundTarget, error)
-	MarkGatewayDeliveryProcessing(context.Context, string) error
+	BeginGatewayDeliveryAttempt(context.Context, string, string, string) (int, error)
 	MarkGatewayDeliverySucceeded(context.Context, string, *int64) error
-	MarkGatewayDeliveryFailed(context.Context, string, string, string) error
+	MarkGatewayDeliveryRetrying(context.Context, string, string, string, time.Time) error
+	MarkGatewayDeliveryReconciling(context.Context, string, string, string) error
+	MarkGatewayDeliveryDeadLettered(context.Context, string, string, string, string, int) error
+	CompleteGatewayDeliveryAttempt(context.Context, string) error
+	GatewayBotRateLimit(context.Context, int64) (time.Time, error)
+	SetGatewayBotRateLimit(context.Context, int64, time.Time) error
 }
 
 type QueueMessage struct {
@@ -52,7 +57,15 @@ type QueueMessage struct {
 type OutboundQueue interface {
 	Append(context.Context, string) (string, error)
 	Read(context.Context, string, int64) ([]QueueMessage, error)
+	ClaimStale(context.Context, string, time.Duration, int64) ([]QueueMessage, error)
 	Ack(context.Context, string) error
+	MoveToDLQAndAck(context.Context, QueueMessage, DLQMetadata) error
+}
+
+type DLQMetadata struct {
+	RouteKey     string
+	AttemptCount int
+	ErrorClass   string
 }
 
 type InlineKeyboardButton struct {
@@ -100,13 +113,60 @@ type Service struct {
 	consumer string
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
+	config   OutboundConfig
+	gateMu   sync.Mutex
+	botGates map[int64]time.Time
 }
 
 func NewService(repo Repository, queue OutboundQueue, telegram Telegram, consumer string) *Service {
+	return NewServiceWithConfig(repo, queue, telegram, OutboundConfig{Consumer: consumer})
+}
+
+type Clock interface {
+	Now() time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
+type OutboundConfig struct {
+	Consumer     string
+	MaxAttempts  int
+	BaseRetry    time.Duration
+	MaxRetry     time.Duration
+	ClaimMinIdle time.Duration
+	BatchSize    int64
+	Clock        Clock
+	Backoff      func(string, int) time.Duration
+}
+
+func NewServiceWithConfig(repo Repository, queue OutboundQueue, telegram Telegram, config OutboundConfig) *Service {
+	consumer := config.Consumer
 	if consumer == "" {
 		consumer = newOpaqueID()
 	}
-	return &Service{repo: repo, queue: queue, telegram: telegram, consumer: consumer}
+	config.Consumer = consumer
+	if config.MaxAttempts <= 0 {
+		config.MaxAttempts = 5
+	}
+	if config.BaseRetry <= 0 {
+		config.BaseRetry = time.Second
+	}
+	if config.MaxRetry <= 0 {
+		config.MaxRetry = 30 * time.Second
+	}
+	if config.ClaimMinIdle <= 0 {
+		config.ClaimMinIdle = time.Second
+	}
+	if config.BatchSize <= 0 {
+		config.BatchSize = 16
+	}
+	if config.Clock == nil {
+		config.Clock = realClock{}
+	}
+	return &Service{repo: repo, queue: queue, telegram: telegram, consumer: consumer, config: config,
+		botGates: make(map[int64]time.Time)}
 }
 
 func (s *Service) Start(parent context.Context) {
@@ -273,7 +333,7 @@ func newOpaqueID() string {
 
 func (s *Service) runOutbound(ctx context.Context) {
 	for ctx.Err() == nil {
-		messages, err := s.queue.Read(ctx, s.consumer, 16)
+		messages, err := s.queue.Read(ctx, s.consumer, s.config.BatchSize)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -281,6 +341,16 @@ func (s *Service) runOutbound(ctx context.Context) {
 			continue
 		}
 		for _, message := range messages {
+			s.processOutbound(ctx, message)
+		}
+		claimed, err := s.queue.ClaimStale(ctx, s.consumer, s.config.ClaimMinIdle, s.config.BatchSize)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		for _, message := range claimed {
 			s.processOutbound(ctx, message)
 		}
 	}
@@ -323,23 +393,51 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 	if delivery.Status == "pending_enqueue" {
 		return
 	}
-	if delivery.Status == "succeeded" || delivery.Status == "failed" {
+	if delivery.Status == "succeeded" || delivery.Status == "reconciling" {
 		_ = s.queue.Ack(ctx, queued.ID)
 		return
+	}
+	if delivery.Status == "dead-lettered" || delivery.Status == "failed" {
+		_ = s.queue.MoveToDLQAndAck(ctx, queued, DLQMetadata{RouteKey: delivery.RouteKey,
+			AttemptCount: delivery.AttemptCount, ErrorClass: delivery.SafeErrorClass})
+		return
+	}
+	// A reclaimed processing item may have reached Telegram before its worker
+	// disappeared. Telegram has no outbound idempotency primitive, so never
+	// blindly send it again.
+	if delivery.Status == "processing" {
+		if err := s.repo.MarkGatewayDeliveryReconciling(ctx, delivery.ID, "", "worker_interrupted_after_dispatch"); err == nil {
+			_ = s.queue.Ack(ctx, queued.ID)
+		}
+		return
+	}
+	if delivery.NextAttemptAt != "" {
+		next, parseErr := time.Parse(time.RFC3339Nano, delivery.NextAttemptAt)
+		if parseErr == nil && s.config.Clock.Now().Before(next) {
+			return
+		}
 	}
 	target, err := s.repo.ResolveGatewayOutboundTarget(ctx, delivery.RouteID)
 	if err != nil || !target.Enabled || !target.Outbound {
-		_ = s.repo.MarkGatewayDeliveryFailed(ctx, delivery.ID, "failed", "route_disabled")
-		_ = s.queue.Ack(ctx, queued.ID)
+		s.deadLetter(ctx, queued, delivery, "", "route_disabled", delivery.AttemptCount)
 		return
 	}
-	if err := s.repo.MarkGatewayDeliveryProcessing(ctx, delivery.ID); err != nil {
+	gate, err := s.botGate(ctx, target.BotAccountID)
+	if err != nil {
+		return
+	}
+	if s.config.Clock.Now().Before(gate) {
+		_ = s.repo.MarkGatewayDeliveryRetrying(ctx, delivery.ID, "", "telegram_rate_limited", gate)
+		return
+	}
+	attemptID := newOpaqueID()
+	attempt, err := s.repo.BeginGatewayDeliveryAttempt(ctx, delivery.ID, attemptID, s.consumer)
+	if err != nil {
 		return
 	}
 	var envelope outboundEnvelope
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		_ = s.repo.MarkGatewayDeliveryFailed(ctx, delivery.ID, "failed", "invalid_stored_payload")
-		_ = s.queue.Ack(ctx, queued.ID)
+		s.deadLetter(ctx, queued, delivery, attemptID, "invalid_stored_payload", attempt)
 		return
 	}
 	var messageID *int64
@@ -362,20 +460,106 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 		err = ErrInvalidPayload
 	}
 	if err == nil {
-		if err := s.repo.MarkGatewayDeliverySucceeded(ctx, delivery.ID, messageID); err == nil {
-			_ = s.queue.Ack(ctx, queued.ID)
+		if completeErr := s.repo.CompleteGatewayDeliveryAttempt(ctx, attemptID); completeErr == nil {
+			if err := s.repo.MarkGatewayDeliverySucceeded(ctx, delivery.ID, messageID); err == nil {
+				_ = s.queue.Ack(ctx, queued.ID)
+			}
+		} else {
+			// Leave processing in the PEL. A future worker will conservatively
+			// reconcile the send instead of duplicating it.
+			return
 		}
 		return
 	}
 	var telegramErr *TelegramError
-	if errors.As(err, &telegramErr) && telegramErr.Retryable {
-		_ = s.repo.MarkGatewayDeliveryFailed(ctx, delivery.ID, "retrying", telegramErr.Class)
-		return
+	if errors.As(err, &telegramErr) {
+		if telegramErr.Outcome == TelegramAmbiguous {
+			if err := s.repo.MarkGatewayDeliveryReconciling(ctx, delivery.ID, attemptID, telegramErr.Class); err == nil {
+				_ = s.queue.Ack(ctx, queued.ID)
+			}
+			return
+		}
+		if telegramErr.Retryable() && attempt < s.config.MaxAttempts {
+			delay := s.retryDelay(delivery.ID, attempt)
+			if telegramErr.RetryAfter > delay {
+				delay = telegramErr.RetryAfter
+			}
+			next := s.config.Clock.Now().Add(delay)
+			if telegramErr.Class == "telegram_rate_limited" {
+				if err := s.setBotGate(ctx, target.BotAccountID, next); err != nil {
+					return
+				}
+			}
+			_ = s.repo.MarkGatewayDeliveryRetrying(ctx, delivery.ID, attemptID, telegramErr.Class, next)
+			return
+		}
+		if telegramErr.Retryable() {
+			s.deadLetter(ctx, queued, delivery, attemptID, telegramErr.Class, attempt)
+			return
+		}
 	}
 	class := "telegram_rejected"
 	if errors.Is(err, ErrInvalidPayload) {
 		class = "invalid_stored_payload"
 	}
-	_ = s.repo.MarkGatewayDeliveryFailed(ctx, delivery.ID, "failed", class)
-	_ = s.queue.Ack(ctx, queued.ID)
+	if telegramErr != nil && telegramErr.Class != "" {
+		class = telegramErr.Class
+	}
+	s.deadLetter(ctx, queued, delivery, attemptID, class, attempt)
+}
+
+func (s *Service) retryDelay(deliveryID string, attempt int) time.Duration {
+	if s.config.Backoff != nil {
+		return s.config.Backoff(deliveryID, attempt)
+	}
+	delay := s.config.BaseRetry
+	for n := 1; n < attempt && delay < s.config.MaxRetry; n++ {
+		delay *= 2
+	}
+	if delay > s.config.MaxRetry {
+		delay = s.config.MaxRetry
+	}
+	var hash uint32
+	for _, char := range deliveryID {
+		hash = hash*33 + uint32(char)
+	}
+	jitter := (float64(int(hash%41)-20) / 100.0) + 1
+	return time.Duration(float64(delay) * jitter)
+}
+
+func (s *Service) botGate(ctx context.Context, botID int64) (time.Time, error) {
+	s.gateMu.Lock()
+	memoryGate := s.botGates[botID]
+	s.gateMu.Unlock()
+	durableGate, err := s.repo.GatewayBotRateLimit(ctx, botID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if durableGate.After(memoryGate) {
+		return durableGate, nil
+	}
+	return memoryGate, nil
+}
+
+func (s *Service) setBotGate(ctx context.Context, botID int64, deadline time.Time) error {
+	if err := s.repo.SetGatewayBotRateLimit(ctx, botID, deadline); err != nil {
+		return err
+	}
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	if deadline.After(s.botGates[botID]) {
+		s.botGates[botID] = deadline
+	}
+	return nil
+}
+
+func (s *Service) deadLetter(ctx context.Context, queued QueueMessage, delivery *models.GatewayDelivery, attemptID, class string, attempts int) {
+	// SQLite records the durable terminal item first. The Redis script then
+	// atomically writes the Stream DLQ entry before acknowledging the source.
+	// If the process stops between them, reclaim sees dead-lettered and retries
+	// the idempotent Stream move.
+	if err := s.repo.MarkGatewayDeliveryDeadLettered(ctx, delivery.ID, attemptID, queued.ID, class, attempts); err != nil {
+		return
+	}
+	_ = s.queue.MoveToDLQAndAck(ctx, queued, DLQMetadata{RouteKey: delivery.RouteKey, AttemptCount: attempts, ErrorClass: class})
 }

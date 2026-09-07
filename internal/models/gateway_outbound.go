@@ -31,6 +31,7 @@ type GatewayDelivery struct {
 	SafeErrorClass string `json:"error_class,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	AcceptedAt     string `json:"accepted_at,omitempty"`
+	NextAttemptAt  string `json:"next_attempt_at,omitempty"`
 	CompletedAt    string `json:"completed_at,omitempty"`
 	UpdatedAt      string `json:"updated_at"`
 }
@@ -51,9 +52,10 @@ type GatewayDeliveryCreate struct {
 // GatewayOutboundTarget is used only inside the worker immediately before a
 // Telegram call. Do not serialize or log this type.
 type GatewayOutboundTarget struct {
-	RouteKey string
-	Enabled  bool
-	Outbound bool
-	Token    string
-	ChatID   int64
+	RouteKey     string
+	BotAccountID int64
+	Enabled      bool
+	Outbound     bool
+	Token        string
+	ChatID       int64
 }

@@ -58,6 +58,14 @@ func (q *memoryOutboundQueue) Read(ctx context.Context, _ string, _ int64) ([]ga
 
 func (q *memoryOutboundQueue) Ack(context.Context, string) error { return nil }
 
+func (q *memoryOutboundQueue) ClaimStale(context.Context, string, time.Duration, int64) ([]gateway.QueueMessage, error) {
+	return nil, nil
+}
+
+func (q *memoryOutboundQueue) MoveToDLQAndAck(context.Context, gateway.QueueMessage, gateway.DLQMetadata) error {
+	return nil
+}
+
 func (q *memoryOutboundQueue) setFail(fail bool) {
 	q.mu.Lock()
 	q.fail = fail

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -376,14 +375,6 @@ func dlqTable(direction string) string {
 	default:
 		return ""
 	}
-}
-
-func (s *Store) GatewayRouteExists(ctx context.Context, routeKey string) error {
-	var value int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM gateway_business_routes WHERE route_key=?`, routeKey).Scan(&value); err != nil {
-		return fmt.Errorf("route lookup: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) GetGatewayRouteProbeTarget(ctx context.Context, routeKey string) (*models.GatewayRouteProbeTarget, error) {

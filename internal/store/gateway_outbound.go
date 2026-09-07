@@ -166,7 +166,7 @@ func (s *Store) CreateGatewayWorkload(name, credentialName, credentialHash strin
 	return id, nil
 }
 
-func (s *Store) GrantGatewayPermission(workloadID int64, routeKey, action string) error {
+func (s *Store) GrantGatewayPermission(workloadID int64, routeKey string, action models.GatewayAction) error {
 	if err := validateGatewayAction(action); err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func (s *Store) AuthenticateGatewayWorkload(ctx context.Context, credentialHash 
 	return &workload, nil
 }
 
-func (s *Store) GatewayRouteForAction(ctx context.Context, workloadID int64, routeKey, action string) (*models.BusinessRoute, bool, error) {
+func (s *Store) GatewayRouteForAction(ctx context.Context, workloadID int64, routeKey string, action models.GatewayAction) (*models.BusinessRoute, bool, error) {
 	route, err := s.GetBusinessRoute(routeKey)
 	if err != nil {
 		return nil, false, err
@@ -481,7 +481,7 @@ func (s *Store) GatewayOutboundCounts(ctx context.Context) (int, error) {
 	return count, err
 }
 
-func validateGatewayAction(action string) error {
+func validateGatewayAction(action models.GatewayAction) error {
 	switch action {
 	case models.GatewayActionMessagesSend, models.GatewayActionCallbacksAnswer, models.GatewayActionDeliveriesRead:
 		return nil

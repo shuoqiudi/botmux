@@ -10,8 +10,8 @@ type GatewayWorkloadCredential struct {
 }
 
 type GatewayPermission struct {
-	RouteKey string `json:"route_key"`
-	Action   string `json:"action"`
+	RouteKey string        `json:"route_key"`
+	Action   GatewayAction `json:"action"`
 }
 
 type GatewayWorkloadAdmin struct {

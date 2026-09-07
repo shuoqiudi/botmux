@@ -6,10 +6,16 @@ description: "Command-line flags for configuring BotMux"
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-token` | `""` | Telegram bot token |
+| `-token-file` | `""` | Read the Telegram bot token from a mounted file |
 | `-addr` | `:8080` | HTTP server listen address |
 | `-db` | `botdata.db` | Path to SQLite database file |
+| `-gateway-key-file` | `""` | Read the 32-byte Gateway encryption key from a mounted file |
 | `-webhook` | `""` | Set webhook URL for receiving updates |
 | `-tg-api` | `""` | Custom Telegram API base URL |
+| `-tgapi-trusted-cidrs` | `""` | CIDRs trusted to call `/tgapi/` without admin auth |
+| `-redis-addr` | `""` | Redis 6.2+ address for durable Gateway Streams |
+| `-redis-password-file` | `""` | Read the Redis password from a mounted file |
+| `-redis-db` | `0` | Redis database number |
 | `-demo` | `false` | Enable demo mode |
 
 ## Examples

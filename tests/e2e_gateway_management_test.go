@@ -81,6 +81,34 @@ func TestE2E_GatewayManagement(t *testing.T) {
 	if !created.InboundEnabled || !created.OutboundEnabled {
 		t.Fatal("route does not expose both direction states")
 	}
+	nativeBotIDs, err := h.store.NativeBotIDsForGatewayAccount(created.BotAccountID)
+	if err != nil || len(nativeBotIDs) != 1 {
+		t.Fatalf("Business Route setup did not create exactly one native polling owner: ids=%v err=%v", nativeBotIDs, err)
+	}
+	if !h.proxy.IsRunning(nativeBotIDs[0]) || h.proxy.GetManagedBot(nativeBotIDs[0]) == nil {
+		t.Fatal("Business Route setup did not bind and start its managed native bot")
+	}
+	const rolledBackToken = "900002:rolled-back-secret"
+	h.fake.RegisterBot(rolledBackToken, "rolled_back_bot", 900002)
+	h.fake.RegisterChat(rolledBackToken, chatID-1, "Rolled back group")
+	rollbackSetup := map[string]any{
+		"bot_account": map[string]any{"name": "Must roll back", "token": rolledBackToken},
+		"destination": map[string]any{"name": "Must roll back", "chat_id": chatID - 1},
+		"route": map[string]any{
+			"route_key": "it_manage", "display_name": "Duplicate", "outbound_enabled": true, "enabled": true,
+		},
+	}
+	status, _ = call(http.MethodPost, "/api/gateway/v1/routes/setup", rollbackSetup)
+	if status != http.StatusConflict {
+		t.Fatalf("conflicting setup status=%d, want 409", status)
+	}
+	if _, err := h.store.GetBotConfigByToken(rolledBackToken); err == nil {
+		t.Fatal("failed Business Route setup left a native polling owner behind")
+	}
+	accountsAfterRollback, err := h.store.GetBotAccounts()
+	if err != nil || len(accountsAfterRollback) != 1 {
+		t.Fatalf("failed Business Route setup was not atomic: accounts=%v err=%v", accountsAfterRollback, err)
+	}
 
 	status, accountsBody := call(http.MethodGet, "/api/gateway/v1/bot-accounts", nil)
 	if status != 200 || bytes.Contains(accountsBody, []byte(`"token"`)) || !bytes.Contains(accountsBody, []byte(`"token_set":true`)) {

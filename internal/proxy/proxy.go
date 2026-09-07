@@ -273,6 +273,16 @@ func (pm *Manager) RegisterManagedBot(botID int64, b *bot.Bot) {
 	log.Printf("[proxy] RegisterManagedBot: botID=%d", botID)
 }
 
+// ActivateManagedBot installs a validated native Bot instance and starts its
+// sole local polling runner. startBot serializes replacement with any existing
+// runner, so a token never gains two owners inside this process.
+func (pm *Manager) ActivateManagedBot(botID int64, b *bot.Bot) {
+	b.SetBotID(botID)
+	pm.RegisterManagedBot(botID, b)
+	pm.ClearWebhookMode(botID)
+	pm.startBot(botID)
+}
+
 // UnregisterManagedBot removes a Bot instance
 func (pm *Manager) UnregisterManagedBot(botID int64) {
 	pm.mu.Lock()

@@ -33,7 +33,7 @@ var idempotencyKeyRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 type Repository interface {
 	AuthenticateGatewayWorkload(context.Context, string) (*models.GatewayWorkload, error)
-	GatewayRouteForAction(context.Context, int64, string, string) (*models.BusinessRoute, bool, error)
+	GatewayRouteForAction(context.Context, int64, string, models.GatewayAction) (*models.BusinessRoute, bool, error)
 	CreateGatewayOutboundDelivery(context.Context, models.GatewayDeliveryCreate) (*models.GatewayDelivery, bool, error)
 	MarkGatewayDeliveryAccepted(context.Context, string) error
 	GetGatewayDelivery(context.Context, int64, string) (*models.GatewayDelivery, error)
@@ -266,7 +266,7 @@ func (s *Service) AcceptCallback(ctx context.Context, workload *models.GatewayWo
 		outboundEnvelope{Kind: "callback", Callback: &callback})
 }
 
-func (s *Service) accept(ctx context.Context, workload *models.GatewayWorkload, routeKey, key, action string, envelope outboundEnvelope) (*models.GatewayDelivery, error) {
+func (s *Service) accept(ctx context.Context, workload *models.GatewayWorkload, routeKey, key string, action models.GatewayAction, envelope outboundEnvelope) (*models.GatewayDelivery, error) {
 	if workload == nil {
 		return nil, ErrUnauthorized
 	}
@@ -280,7 +280,7 @@ func (s *Service) accept(ctx context.Context, workload *models.GatewayWorkload, 
 	if !allowed {
 		return nil, ErrForbidden
 	}
-	if !route.Enabled || route.Status != "active" || !route.OutboundEnabled {
+	if !route.Enabled || route.Status != models.GatewayRouteActive || !route.OutboundEnabled {
 		return nil, ErrRouteDisabled
 	}
 	payload, err := json.Marshal(envelope)
@@ -304,7 +304,7 @@ func (s *Service) accept(ctx context.Context, workload *models.GatewayWorkload, 
 	if err := s.repo.MarkGatewayDeliveryAccepted(ctx, delivery.ID); err != nil {
 		return nil, err
 	}
-	delivery.Status = "accepted"
+	delivery.Status = models.GatewayDeliveryAccepted
 	return delivery, nil
 }
 
@@ -387,7 +387,7 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 	// the Stream entry during that tiny dual-write window, so wait for the
 	// accepting request to finish instead of consuming the item prematurely.
 	acceptanceDeadline := time.Now().Add(time.Second)
-	for delivery.Status == "pending_enqueue" && time.Now().Before(acceptanceDeadline) {
+	for delivery.Status == models.GatewayDeliveryPendingEnqueue && time.Now().Before(acceptanceDeadline) {
 		select {
 		case <-ctx.Done():
 			return
@@ -398,14 +398,14 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 			return
 		}
 	}
-	if delivery.Status == "pending_enqueue" {
+	if delivery.Status == models.GatewayDeliveryPendingEnqueue {
 		return
 	}
-	if delivery.Status == "succeeded" || delivery.Status == "reconciling" {
+	if delivery.Status == models.GatewayDeliverySucceeded || delivery.Status == models.GatewayDeliveryReconciling {
 		_ = s.queue.Ack(ctx, queued.ID)
 		return
 	}
-	if delivery.Status == "dead-lettered" || delivery.Status == "failed" {
+	if delivery.Status == models.GatewayDeliveryDeadLettered {
 		_ = s.queue.MoveToDLQAndAck(ctx, queued, DLQMetadata{RouteKey: delivery.RouteKey,
 			AttemptCount: delivery.AttemptCount, ErrorClass: delivery.SafeErrorClass})
 		return
@@ -413,7 +413,7 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 	// A reclaimed processing item may have reached Telegram before its worker
 	// disappeared. Telegram has no outbound idempotency primitive, so never
 	// blindly send it again.
-	if delivery.Status == "processing" {
+	if delivery.Status == models.GatewayDeliveryProcessing {
 		if err := s.repo.MarkGatewayDeliveryReconciling(ctx, delivery.ID, "", "worker_interrupted_after_dispatch"); err == nil {
 			_ = s.queue.Ack(ctx, queued.ID)
 		}
@@ -520,19 +520,7 @@ func (s *Service) retryDelay(deliveryID string, attempt int) time.Duration {
 	if s.config.Backoff != nil {
 		return s.config.Backoff(deliveryID, attempt)
 	}
-	delay := s.config.BaseRetry
-	for n := 1; n < attempt && delay < s.config.MaxRetry; n++ {
-		delay *= 2
-	}
-	if delay > s.config.MaxRetry {
-		delay = s.config.MaxRetry
-	}
-	var hash uint32
-	for _, char := range deliveryID {
-		hash = hash*33 + uint32(char)
-	}
-	jitter := (float64(int(hash%41)-20) / 100.0) + 1
-	return time.Duration(float64(delay) * jitter)
+	return retryBackoff(deliveryID, attempt, s.config.BaseRetry, s.config.MaxRetry)
 }
 
 func (s *Service) botGate(ctx context.Context, botID int64) (time.Time, error) {

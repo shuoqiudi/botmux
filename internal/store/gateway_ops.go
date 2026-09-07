@@ -107,9 +107,9 @@ func (s *Store) GetGatewayRouteMetrics(ctx context.Context, routeKey string, now
 		return nil, err
 	} else {
 		status := "degraded"
-		if strings.EqualFold(backendStatus, models.InboundSucceeded) {
+		if strings.EqualFold(backendStatus, string(models.InboundSucceeded)) {
 			status = "healthy"
-		} else if strings.EqualFold(backendStatus, models.InboundPending) {
+		} else if strings.EqualFold(backendStatus, string(models.InboundPending)) {
 			status = "unknown"
 		}
 		result.Components.BackendHealth = models.GatewayComponentHealth{Status: status, Detail: strings.ToLower(backendStatus), CheckedAt: backendChecked}
@@ -253,19 +253,19 @@ func (s *Store) PrepareGatewayDLQReplay(ctx context.Context, deliveryID, actorID
 	if err != nil {
 		return nil, false, err
 	}
-	if item.Status == "discarded" {
+	if item.Status == models.GatewayDLQDiscarded {
 		return nil, false, ErrGatewayDLQDiscarded
 	}
-	if item.Status == "replayed" {
+	if item.Status == models.GatewayDLQReplayed {
 		return item, true, nil
 	}
-	if item.Status == "active" {
+	if item.Status == models.GatewayDLQActive {
 		item.ReplayCount++
-		table := dlqTable(item.Direction)
+		table := dlqTable(string(item.Direction))
 		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET state='replay_pending',replay_count=?,acted_at='',acted_by=? WHERE delivery_id=? AND state='active'`, item.ReplayCount, actorID, deliveryID); err != nil {
 			return nil, false, err
 		}
-		if item.Direction == "outbound" {
+		if item.Direction == models.GatewayDirectionOutbound {
 			_, err = tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='replay_pending',next_attempt_at='',completed_at='',updated_at=? WHERE id=?`, nowRFC3339(), deliveryID)
 		} else {
 			_, err = tx.ExecContext(ctx, `UPDATE gateway_inbound_deliveries SET status='REPLAY_PENDING',next_attempt_at='',updated_at=? WHERE delivery_id=?`, nowRFC3339(), deliveryID)
@@ -282,7 +282,7 @@ func (s *Store) PrepareGatewayDLQReplay(ctx context.Context, deliveryID, actorID
 		}); err != nil {
 			return nil, false, err
 		}
-		item.Status = "replay_pending"
+		item.Status = models.GatewayDLQReplayPending
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
@@ -332,17 +332,17 @@ func (s *Store) DiscardGatewayDLQ(ctx context.Context, deliveryID, actorID strin
 	if err != nil {
 		return nil, false, err
 	}
-	if item.Status == "discarded" {
+	if item.Status == models.GatewayDLQDiscarded {
 		return item, true, nil
 	}
-	if item.Status != "active" {
+	if item.Status != models.GatewayDLQActive {
 		return nil, false, ErrGatewayDLQReplayed
 	}
 	now := nowRFC3339()
-	if _, err := tx.ExecContext(ctx, `UPDATE `+dlqTable(item.Direction)+` SET state='discarded',acted_at=?,acted_by=? WHERE delivery_id=? AND state='active'`, now, actorID, deliveryID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE `+dlqTable(string(item.Direction))+` SET state='discarded',acted_at=?,acted_by=? WHERE delivery_id=? AND state='active'`, now, actorID, deliveryID); err != nil {
 		return nil, false, err
 	}
-	if item.Direction == "outbound" {
+	if item.Direction == models.GatewayDirectionOutbound {
 		_, err = tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='discarded',completed_at=?,updated_at=? WHERE id=? AND status='dead-lettered'`, now, now, deliveryID)
 	} else {
 		_, err = tx.ExecContext(ctx, `UPDATE gateway_inbound_deliveries SET status='DISCARDED',updated_at=? WHERE delivery_id=? AND status=?`, now, deliveryID, models.InboundDLQ)
@@ -362,7 +362,7 @@ func (s *Store) DiscardGatewayDLQ(ctx context.Context, deliveryID, actorID strin
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
-	item.Status, item.ActedAt = "discarded", now
+	item.Status, item.ActedAt = models.GatewayDLQDiscarded, now
 	return item, false, nil
 }
 

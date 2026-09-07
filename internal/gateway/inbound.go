@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -40,7 +41,7 @@ type InboundQueue interface {
 
 type IngestResult struct {
 	DeliveryID string
-	Status     string
+	Status     models.InboundDeliveryStatus
 	Duplicate  bool
 }
 
@@ -216,8 +217,13 @@ func (i *Inbound) process(ctx context.Context, message StreamMessage) error {
 	if err != nil {
 		return err
 	}
-	if delivery.Status == models.InboundSucceeded || delivery.Status == models.InboundDLQ ||
-		delivery.Status == models.InboundRejectedUnknownRoute || delivery.Status == models.InboundRejectedRouteDisabled {
+	if delivery.Status == models.InboundDLQ {
+		// The operator-visible SQLite record is written before source XACK. If a
+		// process stopped between those operations, reclaim completes the
+		// idempotent Redis DLQ move instead of acknowledging invisibly.
+		return i.queue.MoveToDLQAndAck(ctx, message, delivery.LastErrorClass, delivery.AttemptCount)
+	}
+	if delivery.Status == models.InboundSucceeded || delivery.Status == models.InboundRejectedUnknownRoute || delivery.Status == models.InboundRejectedRouteDisabled {
 		return i.queue.Ack(ctx, message.ID)
 	}
 	if delivery.NextAttemptAt != "" {
@@ -247,17 +253,17 @@ func (i *Inbound) process(ctx context.Context, message StreamMessage) error {
 	if attempt < i.config.MaxAttempts {
 		return nil
 	}
-	if err := i.queue.MoveToDLQAndAck(ctx, message, class, attempt); err != nil {
+	if err := i.store.MarkInboundDLQ(ctx, delivery.DeliveryID, class); err != nil {
 		return err
 	}
-	return i.store.MarkInboundDLQ(ctx, delivery.DeliveryID, class)
+	return i.queue.MoveToDLQAndAck(ctx, message, class, attempt)
 }
 
 func (i *Inbound) deliver(ctx context.Context, delivery *models.InboundDelivery, attemptID string, attempt int) (int, string) {
 	if delivery.BackendURL == "" || delivery.BackendToken == "" {
 		return 0, "backend_not_configured"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, delivery.BackendURL, jsonBytesReader(delivery.RawUpdate))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, delivery.BackendURL, bytes.NewReader(delivery.RawUpdate))
 	if err != nil {
 		return 0, "backend_request_invalid"
 	}
@@ -279,18 +285,5 @@ func (i *Inbound) deliver(ctx context.Context, delivery *models.InboundDelivery,
 }
 
 func (i *Inbound) retryDelay(deliveryID string, attempt int) time.Duration {
-	delay := i.config.BaseRetry
-	for n := 1; n < attempt && delay < i.config.MaxRetry; n++ {
-		delay *= 2
-	}
-	if delay > i.config.MaxRetry {
-		delay = i.config.MaxRetry
-	}
-	// Stable +/-20% jitter prevents synchronized retries and keeps tests deterministic.
-	var hash uint32
-	for _, char := range deliveryID {
-		hash = hash*33 + uint32(char)
-	}
-	jitter := (float64(int(hash%41)-20) / 100.0) + 1
-	return time.Duration(float64(delay) * jitter)
+	return retryBackoff(deliveryID, attempt, i.config.BaseRetry, i.config.MaxRetry)
 }

@@ -59,6 +59,7 @@ func main() {
 	redisAddr := flag.String("redis-addr", "", "Redis address for durable Gateway Streams (for example redis:6379)")
 	redisPasswordFile := flag.String("redis-password-file", "", "Read the Redis password from a file")
 	redisDB := flag.Int("redis-db", 0, "Redis database for durable Gateway Streams")
+	tgapiTrustedCIDRs := flag.String("tgapi-trusted-cidrs", "", "Comma-separated CIDRs allowed to use /tgapi/ without admin authentication")
 	demoMode := flag.Bool("demo", false, "Enable demo mode with separate database and seeded data")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
@@ -179,6 +180,9 @@ func main() {
 	srv.LogBuf = logBuf
 	srv.VersionChecker = verpkg.NewChecker(version, commit, buildDate)
 	srv.TgAPIBaseURL = telegramAPIURL
+	if err := srv.SetTGAPITrustedCIDRs(*tgapiTrustedCIDRs); err != nil {
+		log.Fatalf("Invalid trusted /tgapi/ network configuration: %v", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

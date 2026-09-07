@@ -276,11 +276,15 @@ func TestHandleUpdatesPollEmptyTimeout0(t *testing.T) {
 }
 
 // TestTgapiGetUpdatesLongPoll verifies that /tgapi/bot{TOKEN}/getUpdates
-// serves from UpdateQueue when long_poll_enabled=true (no auth required).
+// serves from UpdateQueue when long_poll_enabled=true for an explicitly
+// trusted compatibility network.
 func TestTgapiGetUpdatesLongPoll(t *testing.T) {
 	store := newTestStore(t)
 	proxy := proxy.NewManager(store, "https://api.telegram.org")
 	server := server.NewServer(store, proxy)
+	if err := server.SetTGAPITrustedCIDRs("127.0.0.0/8,::1/128"); err != nil {
+		t.Fatal(err)
+	}
 
 	token := "123456:ABC-DEF"
 	botID, _ := store.AddBotConfig(models.BotConfig{
@@ -300,7 +304,8 @@ func TestTgapiGetUpdatesLongPoll(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	// No auth cookie/bearer — token in URL is the auth
+	// No admin credential is needed because the loopback test peer was
+	// explicitly placed in the trusted compatibility network.
 	url := fmt.Sprintf("%s/tgapi/bot%s/getUpdates?timeout=0", ts.URL, token)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -329,6 +334,9 @@ func TestTgapiGetUpdatesDisabledFallsThrough(t *testing.T) {
 	store := newTestStore(t)
 	proxy := proxy.NewManager(store, "https://api.telegram.org")
 	server := server.NewServer(store, proxy)
+	if err := server.SetTGAPITrustedCIDRs("127.0.0.0/8,::1/128"); err != nil {
+		t.Fatal(err)
+	}
 
 	token := "123456:XYZ"
 	store.AddBotConfig(models.BotConfig{

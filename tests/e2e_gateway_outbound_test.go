@@ -105,7 +105,7 @@ func TestE2E_GatewayOutbound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []string{models.GatewayActionMessagesSend, models.GatewayActionCallbacksAnswer, models.GatewayActionDeliveriesRead} {
+	for _, action := range []models.GatewayAction{models.GatewayActionMessagesSend, models.GatewayActionCallbacksAnswer, models.GatewayActionDeliveriesRead} {
 		if err := h.store.GrantGatewayPermission(workloadID, "alerts", action); err != nil {
 			t.Fatal(err)
 		}

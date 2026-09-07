@@ -149,7 +149,7 @@ func (s *Store) PrepareInboundDelivery(ctx context.Context, botID, updateID int6
 		route = &models.InboundRoute{}
 	} else if routeErr != nil {
 		return nil, false, routeErr
-	} else if !route.Enabled || !route.InboundEnabled || route.Status != "active" {
+	} else if !route.Enabled || !route.InboundEnabled || route.Status != models.GatewayRouteActive {
 		status = models.InboundRejectedRouteDisabled
 	}
 

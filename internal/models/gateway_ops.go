@@ -75,9 +75,9 @@ type GatewayDeliveryDetail struct {
 	DeliveryID    string                   `json:"delivery_id"`
 	RouteKey      string                   `json:"route_key"`
 	RouteRevision int64                    `json:"route_revision"`
-	Direction     string                   `json:"direction"`
-	Action        string                   `json:"action"`
-	Status        string                   `json:"status"`
+	Direction     GatewayDirection         `json:"direction"`
+	Action        GatewayAction            `json:"action"`
+	Status        GatewayDeliveryStatus    `json:"status"`
 	AttemptCount  int                      `json:"attempt_count"`
 	ErrorClass    string                   `json:"error_class,omitempty"`
 	CreatedAt     string                   `json:"created_at"`
@@ -89,13 +89,13 @@ type GatewayDeliveryDetail struct {
 }
 
 type GatewayDLQItem struct {
-	DeliveryID   string `json:"delivery_id"`
-	RouteKey     string `json:"route_key"`
-	Direction    string `json:"direction"`
-	Status       string `json:"status"`
-	ErrorClass   string `json:"error_class"`
-	AttemptCount int    `json:"attempt_count"`
-	ReplayCount  int    `json:"replay_count"`
-	EnteredAt    string `json:"entered_at"`
-	ActedAt      string `json:"acted_at,omitempty"`
+	DeliveryID   string           `json:"delivery_id"`
+	RouteKey     string           `json:"route_key"`
+	Direction    GatewayDirection `json:"direction"`
+	Status       GatewayDLQState  `json:"status"`
+	ErrorClass   string           `json:"error_class"`
+	AttemptCount int              `json:"attempt_count"`
+	ReplayCount  int              `json:"replay_count"`
+	EnteredAt    string           `json:"entered_at"`
+	ActedAt      string           `json:"acted_at,omitempty"`
 }

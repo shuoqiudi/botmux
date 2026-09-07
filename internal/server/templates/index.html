@@ -2420,6 +2420,12 @@ function applyLang() {
 }
 
 function updateModalLabels() {
+	const userRoleOperator = document.getElementById('userRoleOperator');
+	if (userRoleOperator) userRoleOperator.textContent = t('operator');
+	const logsCloseBtn = document.getElementById('logsCloseBtn');
+	if (logsCloseBtn) logsCloseBtn.textContent = t('close');
+	const userProfileCloseBtn = document.getElementById('userProfileCloseBtn');
+	if (userProfileCloseBtn) userProfileCloseBtn.textContent = t('close');
   // bot modal field labels
   const botFieldLabels = document.querySelectorAll('#botModal .modal-field > label');
   if (botFieldLabels.length >= 1) botFieldLabels[0].textContent = t('name');
@@ -4310,7 +4316,7 @@ function closeUserProfile() {
       <label>Role</label>
       <select id="userEditRole" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;color:var(--text);font-family:var(--ff-mono);font-size:13px;outline:none">
         <option value="user">User</option>
-		<option value="operator">Operator</option>
+		<option value="operator" id="userRoleOperator">Operator</option>
         <option value="admin">Admin</option>
       </select>
     </div>
@@ -4370,7 +4376,7 @@ function closeUserProfile() {
           <input type="checkbox" id="logsAutoScroll" checked> <span id="logsAutoScrollLabel">Auto-scroll</span>
         </label>
         <button class="btn btn-sm" onclick="clearLogsView()" style="padding:2px 8px;font-size:9px" id="logsClearBtn">CLEAR</button>
-        <button class="btn btn-sm" onclick="closeLogsPanel()" style="padding:2px 8px;font-size:9px">CLOSE</button>
+        <button class="btn btn-sm" id="logsCloseBtn" onclick="closeLogsPanel()" style="padding:2px 8px;font-size:9px">CLOSE</button>
       </div>
     </h3>
     <div id="logsContainer" style="flex:1;overflow-y:auto;background:var(--surface1);border-radius:6px;padding:8px;font-family:var(--ff-mono);font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-all"></div>
@@ -4387,7 +4393,7 @@ function closeUserProfile() {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-primary btn-sm" id="businessRouteAddBtn" onclick="showBusinessRouteSetup()">+ CREATE</button>
-        <button class="btn btn-sm" onclick="closeBusinessRoutes()">CLOSE</button>
+        <button class="btn btn-sm" id="businessRoutesCloseBtn" onclick="closeBusinessRoutes()">CLOSE</button>
       </div>
     </div>
     <div id="businessRoutesList"></div>
@@ -4430,7 +4436,7 @@ function closeUserProfile() {
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
-      <div class="panel-title">Business Route</div>
+      <div class="panel-title" id="businessRoutePanelTitle">Business Route</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
         <div class="modal-field"><label>route_key</label><input id="businessRouteKey" placeholder="it_manage" pattern="[a-z0-9_-]+"></div>
         <div class="modal-field"><label id="businessRouteNameLabel">Display name</label><input id="businessRouteName"></div>
@@ -4461,6 +4467,7 @@ function applyBusinessRouteLang() {
   const values = {
     businessRoutesBtn: 'business_routes', businessRoutesTitle: 'business_routes',
     businessRoutesSubtitle: 'business_routes_subtitle', businessRouteAddBtn: 'business_route_create',
+	businessRoutesCloseBtn: 'close', businessRoutePanelTitle: 'business_route',
     businessRouteSetupTitle: 'business_route_create_title', businessBotAccountTitle: 'bot_account',
     businessDestinationTitle: 'telegram_destination', businessBotNameLabel: 'display_name',
     businessDestinationNameLabel: 'display_name', businessBotTokenLabel: 'bot_token_write_only',
@@ -4816,7 +4823,7 @@ function clearLogsView() {
     <h3 id="userProfileTitle" style="margin-bottom:16px"></h3>
     <div id="userProfileContent"></div>
     <div style="text-align:right;margin-top:16px">
-      <button class="btn" onclick="closeUserProfile()">CLOSE</button>
+      <button class="btn" id="userProfileCloseBtn" onclick="closeUserProfile()">CLOSE</button>
     </div>
   </div>
 </div>

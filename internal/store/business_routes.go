@@ -366,36 +366,66 @@ func (s *Store) GetBusinessRoutes() ([]models.BusinessRoute, error) {
 }
 
 // CreateBusinessRouteSetup commits the three validated objects together.
-func (s *Store) CreateBusinessRouteSetup(a models.BotAccount, d models.TelegramDestination, r models.BusinessRoute) (*models.BusinessRoute, error) {
+func (s *Store) CreateBusinessRouteSetup(a models.BotAccount, d models.TelegramDestination, r models.BusinessRoute, actorID string) (*models.BusinessRoute, int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer tx.Rollback()
 	now := nowRFC3339()
 	sealedToken, err := s.sealSecret(a.Token)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	fingerprint := s.secretFingerprint(a.Token)
+	// A Gateway Bot Account must always have exactly one native BotMux polling
+	// owner. Reuse an existing native identity when the token was already added;
+	// otherwise create it in the same transaction as the logical route objects.
+	var nativeBotID int64
+	var nativeCount int
+	err = tx.QueryRow(`SELECT COUNT(*),COALESCE(MIN(id),0) FROM bots WHERE token_fingerprint=?`, fingerprint).Scan(&nativeCount, &nativeBotID)
+	if err == nil && nativeCount > 1 {
+		return nil, 0, errors.New("multiple native bots already use this Telegram identity")
+	}
+	if err == nil && nativeCount == 0 {
+		res, insertErr := tx.Exec(`INSERT INTO bots(name,token,token_ciphertext,token_fingerprint,bot_username,manage_enabled,proxy_enabled,source)
+			VALUES(?, '',?,?,?,1,0,'gateway')`, a.Name, sealedToken, fingerprint, a.Username)
+		if insertErr != nil {
+			return nil, 0, insertErr
+		}
+		nativeBotID, err = res.LastInsertId()
+	} else if err == nil {
+		_, err = tx.Exec(`UPDATE bots SET manage_enabled=1,disabled=0 WHERE id=?`, nativeBotID)
+	}
+	if err != nil {
+		return nil, 0, err
 	}
 	accountRes, err := tx.Exec(`INSERT INTO gateway_bot_accounts(name,username,token,token_ciphertext,token_fingerprint,revision,created_at,updated_at) VALUES(?,?, '',?,?,1,?,?)`, a.Name, a.Username, sealedToken, s.secretFingerprint(a.Token), now, now)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	accountID, _ := accountRes.LastInsertId()
 	destRes, err := tx.Exec(`INSERT INTO gateway_telegram_destinations(name,bot_account_id,chat_id,chat_title,status,validated_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, d.Name, accountID, d.ChatID, d.ChatTitle, "active", d.ValidatedAt, now, now)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	destinationID, _ := destRes.LastInsertId()
 	r.BotAccountID, r.DestinationID = accountID, destinationID
-	_, err = insertBusinessRoute(s, tx, r)
+	routeID, err := insertBusinessRoute(s, tx, r)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if err := appendGatewayAudit(tx, routeID, 1, "admin", actorID, "route.create", map[string]any{
+		"bot_account_created": true, "destination_created": true, "token_configured": true,
+		"backend_credential_configured": r.InboundBackendToken != "", "validated": true,
+	}); err != nil {
+		return nil, 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return s.GetBusinessRoute(r.RouteKey)
+	stored, err := s.GetBusinessRoute(r.RouteKey)
+	return stored, nativeBotID, err
 }
 
 func (s *Store) ValidateBusinessRouteReferences(botAccountID, destinationID int64) error {

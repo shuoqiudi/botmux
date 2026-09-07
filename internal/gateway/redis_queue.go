@@ -76,14 +76,7 @@ func (q *RedisQueue) verify(ctx context.Context) error {
 	if majorErr != nil || minorErr != nil || major < 6 || (major == 6 && minor < 2) {
 		return fmt.Errorf("Redis 6.2 or newer is required")
 	}
-	persistenceInfo, err := q.client.Info(ctx, "persistence").Result()
-	if err != nil {
-		return fmt.Errorf("read Redis persistence information: %w", err)
-	}
-	if infoValue(persistenceInfo, "aof_enabled") != "1" {
-		return fmt.Errorf("Redis AOF persistence must be enabled")
-	}
-	return nil
+	return verifyRedisAOF(ctx, q.client)
 }
 
 func infoValue(info, key string) string {
@@ -216,34 +209,7 @@ func (q *RedisQueue) ReplayFromDLQ(ctx context.Context, deliveryID string, gener
 }
 
 func (q *RedisQueue) InspectQueue(ctx context.Context) (QueueObservation, error) {
-	result := QueueObservation{CheckedAt: time.Now().UTC()}
-	if err := q.client.Ping(ctx).Err(); err != nil {
-		return result, err
-	}
-	result.Available = true
-	persistence, err := q.client.Info(ctx, "persistence").Result()
-	if err != nil {
-		return result, err
-	}
-	result.Persistence = infoValue(persistence, "aof_enabled") == "1"
-	pending, err := q.client.XPending(ctx, q.stream, q.group).Result()
-	if err != nil && !strings.Contains(err.Error(), "NOGROUP") {
-		return result, err
-	}
-	if pending != nil {
-		result.Pending = pending.Count
-	}
-	groups, err := q.client.XInfoGroups(ctx, q.stream).Result()
-	if err != nil && !strings.Contains(err.Error(), "no such key") {
-		return result, err
-	}
-	for _, group := range groups {
-		if group.Name == q.group {
-			result.Depth = group.Lag + group.Pending
-			break
-		}
-	}
-	return result, nil
+	return inspectRedisQueue(ctx, q.client, q.stream, q.group)
 }
 
 func (q *RedisQueue) Close() error { return q.client.Close() }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/models"
 	"github.com/skrashevich/botmux/internal/store"
 )
@@ -400,7 +401,7 @@ func (s *Server) validateRoute(route *models.BusinessRoute) error {
 		return err
 	}
 	if !route.Enabled {
-		route.Status = "disabled"
+		route.Status = models.GatewayRouteDisabled
 		return nil
 	}
 	account, err := s.store.GetBotAccount(route.BotAccountID)
@@ -417,7 +418,7 @@ func (s *Server) validateRoute(route *models.BusinessRoute) error {
 	if _, err := s.validateTelegramChat(account.Token, destination.ChatID); err != nil {
 		return err
 	}
-	route.Status = "active"
+	route.Status = models.GatewayRouteActive
 	route.LastValidatedAt = time.Now().UTC().Format(time.RFC3339)
 	return nil
 }
@@ -570,6 +571,13 @@ func (s *Server) handleBusinessRouteSetup(w http.ResponseWriter, r *http.Request
 		writeBusinessError(w, 422, "telegram_validation_failed", err)
 		return
 	}
+	// Construct the actual native polling owner before committing metadata. A
+	// transient authorization failure therefore leaves no partial Route setup.
+	managedBot, err := bot.NewBot(input.BotAccount.Token, s.store, 0, s.tgAPIURL())
+	if err != nil {
+		writeBusinessError(w, 422, "telegram_validation_failed", err)
+		return
+	}
 	// Placeholder references allow shared request validation; the transaction
 	// replaces them with the newly created stable IDs.
 	input.Route.BotAccountID, input.Route.DestinationID = 1, 1
@@ -579,19 +587,22 @@ func (s *Server) handleBusinessRouteSetup(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if route.Enabled {
-		route.Status = "active"
+		route.Status = models.GatewayRouteActive
 		route.LastValidatedAt = time.Now().UTC().Format(time.RFC3339)
 	} else {
-		route.Status = "disabled"
+		route.Status = models.GatewayRouteDisabled
 	}
-	stored, err := s.store.CreateBusinessRouteSetup(
+	stored, nativeBotID, err := s.store.CreateBusinessRouteSetup(
 		models.BotAccount{Name: strings.TrimSpace(input.BotAccount.Name), Username: identity.Username, Token: input.BotAccount.Token},
-		models.TelegramDestination{Name: strings.TrimSpace(input.Destination.Name), ChatID: input.Destination.ChatID, ChatTitle: destinationTitle(chat), ValidatedAt: route.LastValidatedAt}, route)
+		models.TelegramDestination{Name: strings.TrimSpace(input.Destination.Name), ChatID: input.Destination.ChatID, ChatTitle: destinationTitle(chat), ValidatedAt: route.LastValidatedAt}, route, gatewayAdminActor(r))
 	if err != nil {
 		writeBusinessError(w, 409, "storage_error", err)
 		return
 	}
-	_ = s.store.RecordGatewayAudit(stored.ID, stored.Revision, gatewayAdminActor(r), "route.create", map[string]any{"bot_account_created": true, "destination_created": true, "token_configured": true, "backend_credential_configured": stored.BackendCredentialSet, "validated": true})
+	if s.proxy != nil {
+		s.proxy.ActivateManagedBot(nativeBotID, managedBot)
+		s.RegisterBot(nativeBotID, managedBot)
+	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, stored)
 }
@@ -617,7 +628,7 @@ func (s *Server) handleBusinessRouteTest(w http.ResponseWriter, r *http.Request,
 		}
 		return
 	}
-	if !route.Enabled || route.Status != "active" || !route.OutboundEnabled {
+	if !route.Enabled || route.Status != models.GatewayRouteActive || !route.OutboundEnabled {
 		writeBusinessError(w, 409, "route_not_sendable", errors.New("business route is not active for outbound messages"))
 		return
 	}

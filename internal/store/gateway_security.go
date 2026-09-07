@@ -294,8 +294,16 @@ func (s *Store) MigrateTelegramDestination(d models.TelegramDestination, expecte
 	}
 	for _, route := range routes {
 		next := route.revision + 1
-		if _, err := tx.Exec(`UPDATE gateway_business_routes SET revision=?,last_validated_at=?,updated_at=? WHERE id=? AND revision=?`, next, d.ValidatedAt, nowRFC3339(), route.id, route.revision); err != nil {
+		// Keep every active Route reference internally consistent when a
+		// Destination is rebound to another Bot Account. The old active revision
+		// remains immutable and can still explain deliveries accepted before the
+		// migration.
+		result, err := tx.Exec(`UPDATE gateway_business_routes SET bot_account_id=?,revision=?,last_validated_at=?,updated_at=? WHERE id=? AND revision=?`, d.BotAccountID, next, d.ValidatedAt, nowRFC3339(), route.id, route.revision)
+		if err != nil {
 			return err
+		}
+		if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+			return ErrRevisionConflict
 		}
 		if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at)
 			SELECT id,?,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,'',inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,?,? FROM gateway_business_routes WHERE id=?`, next, d.ValidatedAt, nowRFC3339(), route.id); err != nil {
@@ -445,7 +453,7 @@ func (s *Store) SetGatewayPermissions(id, expected int64, permissions []models.G
 	}
 	normalized := append([]models.GatewayPermission(nil), permissions...)
 	sort.Slice(normalized, func(i, j int) bool {
-		return normalized[i].RouteKey+normalized[i].Action < normalized[j].RouteKey+normalized[j].Action
+		return normalized[i].RouteKey+string(normalized[i].Action) < normalized[j].RouteKey+string(normalized[j].Action)
 	})
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -479,7 +487,7 @@ func (s *Store) SetGatewayPermissions(id, expected int64, permissions []models.G
 	}
 	safe := make([]string, 0, len(normalized))
 	for _, p := range normalized {
-		safe = append(safe, p.RouteKey+":"+p.Action)
+		safe = append(safe, p.RouteKey+":"+string(p.Action))
 	}
 	if err := appendGatewayAudit(tx, 0, current+1, "admin", actorID, "permissions.replace", map[string]any{"workload_id": id, "grants": safe}); err != nil {
 		return nil, err

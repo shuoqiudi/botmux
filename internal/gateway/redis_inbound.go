@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -149,45 +148,11 @@ func (q *RedisInboundQueue) ReplayFromDLQ(ctx context.Context, deliveryID string
 }
 
 func (q *RedisInboundQueue) InspectQueue(ctx context.Context) (QueueObservation, error) {
-	result := QueueObservation{CheckedAt: time.Now().UTC()}
-	if err := q.client.Ping(ctx).Err(); err != nil {
-		return result, err
-	}
-	result.Available = true
-	persistence, err := q.client.Info(ctx, "persistence").Result()
-	if err != nil {
-		return result, err
-	}
-	result.Persistence = strings.Contains(persistence, "aof_enabled:1")
-	pending, err := q.client.XPending(ctx, q.stream, q.group).Result()
-	if err != nil && !strings.Contains(err.Error(), "NOGROUP") {
-		return result, err
-	}
-	if pending != nil {
-		result.Pending = pending.Count
-	}
-	groups, err := q.client.XInfoGroups(ctx, q.stream).Result()
-	if err != nil && !strings.Contains(err.Error(), "no such key") {
-		return result, err
-	}
-	for _, group := range groups {
-		if group.Name == q.group {
-			result.Depth = group.Lag + group.Pending
-			break
-		}
-	}
-	return result, nil
+	return inspectRedisQueue(ctx, q.client, q.stream, q.group)
 }
 
 // VerifyDurability rejects ephemeral Redis deployments before workers start.
 // The production contract requires AOF and a persistent volume.
 func (q *RedisInboundQueue) VerifyDurability(ctx context.Context) error {
-	info, err := q.client.Info(ctx, "persistence").Result()
-	if err != nil {
-		return fmt.Errorf("read Redis persistence status: %w", err)
-	}
-	if !strings.Contains(info, "aof_enabled:1") {
-		return errors.New("Redis AOF persistence is required for Gateway delivery")
-	}
-	return nil
+	return verifyRedisAOF(ctx, q.client)
 }

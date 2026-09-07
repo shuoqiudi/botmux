@@ -173,7 +173,7 @@ func (o *Operations) ReplayDLQ(ctx context.Context, deliveryID, actorID string) 
 		return item, unchanged, err
 	}
 	var queue OperationalQueue
-	if item.Direction == "outbound" {
+	if item.Direction == models.GatewayDirectionOutbound {
 		queue = o.outboundQueue
 	} else {
 		queue = o.inboundQueue
@@ -185,10 +185,10 @@ func (o *Operations) ReplayDLQ(ctx context.Context, deliveryID, actorID string) 
 	if err != nil {
 		return nil, false, ErrQueueUnavailable
 	}
-	if err := o.store.CompleteGatewayDLQReplay(ctx, deliveryID, item.Direction, streamID, actorID); err != nil {
+	if err := o.store.CompleteGatewayDLQReplay(ctx, deliveryID, string(item.Direction), streamID, actorID); err != nil {
 		return nil, false, err
 	}
-	item.Status = "replayed"
+	item.Status = models.GatewayDLQReplayed
 	item.ActedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return item, false, nil
 }

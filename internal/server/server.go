@@ -52,6 +52,7 @@ type Server struct {
 	LogBuf         *logbuf.LogBuffer
 	VersionChecker *version.Checker
 	TgAPIBaseURL   string // override for Telegram API base URL (tests/custom deployments)
+	tgapiTrusted   []*net.IPNet
 }
 
 func NewServer(s *store.Store, p *proxy.Manager) *Server {
@@ -94,39 +95,84 @@ const authUserKey contextKey = "auth_user"
 // authMiddleware checks Bearer API key or session cookie and adds user to context
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var user *models.AuthUser
-
-		// Check Bearer token first
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			keyHash := auth.HashAPIKey(token)
-			u, err := s.store.GetUserByAPIKey(keyHash)
-			if err == nil && u != nil {
-				user = u
-			}
-		}
-
-		// Fall back to session cookie
+		user := s.authenticateUser(r)
 		if user == nil {
-			cookie, err := r.Cookie(auth.SessionCookieName)
-			if err != nil || cookie.Value == "" {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(401)
-				w.Write([]byte(`{"error":"unauthorized"}`))
-				return
-			}
-			u, err := s.store.GetUserBySession(cookie.Value)
-			if err != nil || u == nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(401)
-				w.Write([]byte(`{"error":"unauthorized"}`))
-				return
-			}
-			user = u
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
 		}
 
 		ctx := context.WithValue(r.Context(), authUserKey, user)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+func (s *Server) authenticateUser(r *http.Request) *models.AuthUser {
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if user, err := s.store.GetUserByAPIKey(auth.HashAPIKey(token)); err == nil {
+			return user
+		}
+	}
+	cookie, err := r.Cookie(auth.SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	user, err := s.store.GetUserBySession(cookie.Value)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
+// SetTGAPITrustedCIDRs configures networks allowed to use the token-bearing
+// compatibility API without an admin credential. With no configured CIDRs,
+// /tgapi/ is admin-authenticated only, including on a published port.
+func (s *Server) SetTGAPITrustedCIDRs(value string) error {
+	var networks []*net.IPNet
+	for _, raw := range strings.Split(value, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(raw)
+		if err != nil {
+			return fmt.Errorf("invalid trusted tgapi CIDR %q: %w", raw, err)
+		}
+		networks = append(networks, network)
+	}
+	s.tgapiTrusted = networks
+	return nil
+}
+
+func (s *Server) tgapiAccess(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		remoteIP := net.ParseIP(host)
+		for _, network := range s.tgapiTrusted {
+			if remoteIP != nil && network.Contains(remoteIP) {
+				next(w, r)
+				return
+			}
+		}
+		user := s.authenticateUser(r)
+		if user == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		if user.Role != "admin" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), authUserKey, user)))
 	}
 }
 
@@ -248,9 +294,10 @@ func (s *Server) BuildMux() *http.ServeMux {
 		log.Printf("Webhook endpoint registered at %s", s.webhookPath)
 	}
 
-	// Telegram API proxy — no auth (backends use this)
-	mux.HandleFunc("/tgapi/file/", s.handleTelegramFileProxy)
-	mux.HandleFunc("/tgapi/", s.handleTelegramAPIProxy)
+	// Telegram API compatibility proxy. Token-bearing paths require an admin
+	// credential unless the peer belongs to an explicitly configured network.
+	mux.HandleFunc("/tgapi/file/", s.tgapiAccess(s.handleTelegramFileProxy))
+	mux.HandleFunc("/tgapi/", s.tgapiAccess(s.handleTelegramAPIProxy))
 
 	// Health check — no auth (no sensitive info)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {

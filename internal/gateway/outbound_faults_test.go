@@ -54,7 +54,7 @@ func newFaultRepository(ids ...string) *faultRepository {
 func (r *faultRepository) AuthenticateGatewayWorkload(context.Context, string) (*models.GatewayWorkload, error) {
 	return nil, errors.New("unused")
 }
-func (r *faultRepository) GatewayRouteForAction(context.Context, int64, string, string) (*models.BusinessRoute, bool, error) {
+func (r *faultRepository) GatewayRouteForAction(context.Context, int64, string, models.GatewayAction) (*models.BusinessRoute, bool, error) {
 	return nil, false, errors.New("unused")
 }
 func (r *faultRepository) CreateGatewayOutboundDelivery(context.Context, models.GatewayDeliveryCreate) (*models.GatewayDelivery, bool, error) {

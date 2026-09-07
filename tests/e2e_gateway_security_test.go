@@ -3,6 +3,7 @@ package tests
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -233,6 +234,95 @@ func TestE2E_GatewayRotationPermissionsAndAudit(t *testing.T) {
 	}
 	if !bytes.Contains(audit, []byte(`"bot_token.rotate"`)) || !bytes.Contains(audit, []byte(`"permissions.replace"`)) || !bytes.Contains(audit, []byte(`"route.disable"`)) {
 		t.Fatalf("required audit events missing: %s", audit)
+	}
+}
+
+func TestGatewayTGAPIRequiresAdminOrExplicitTrustedNetwork(t *testing.T) {
+	h := setupE2E(t)
+	const token = "990201:compatibility-secret"
+	h.fake.RegisterBot(token, "compat_bot", 990201)
+	mux := h.server.BuildMux()
+
+	request := httptest.NewRequest(http.MethodPost, "/tgapi/bot"+token+"/getMe", nil)
+	request.RemoteAddr = "203.0.113.8:4567"
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), token) {
+		t.Fatalf("public unauthenticated tgapi status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	if err := h.server.SetTGAPITrustedCIDRs("10.20.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/tgapi/bot"+token+"/getMe", nil)
+	request.RemoteAddr = "10.20.3.4:4567"
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("explicit trusted tgapi network status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	if err := h.server.SetTGAPITrustedCIDRs("not-a-network"); err == nil {
+		t.Fatal("invalid trusted tgapi CIDR was accepted")
+	}
+}
+
+func TestGatewayDestinationBotRebindUpdatesEveryLinkedRouteAtomically(t *testing.T) {
+	h := setupE2E(t)
+	firstID, err := h.store.AddBotAccount(models.BotAccount{Name: "first", Username: "first_bot", Token: "990301:first-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := h.store.AddBotAccount(models.BotAccount{Name: "second", Username: "second_bot", Token: "990302:second-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationID, err := h.store.AddTelegramDestination(models.TelegramDestination{
+		Name: "shared", BotAccountID: firstID, ChatID: -100990301, Status: "active", ValidatedAt: "2026-09-07T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"rebind_one", "rebind_two"} {
+		if _, err := h.store.AddBusinessRoute(models.BusinessRoute{
+			RouteKey: key, DisplayName: key, BotAccountID: firstID, DestinationID: destinationID,
+			OutboundEnabled: true, Enabled: true, Status: "active",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination, _ := h.store.GetTelegramDestination(destinationID)
+	candidate := *destination
+	candidate.BotAccountID = secondID
+	candidate.ChatID = -100990302
+	candidate.ValidatedAt = "2026-09-07T00:01:00Z"
+	if err := h.store.MigrateTelegramDestination(candidate, destination.Revision, "test-admin"); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"rebind_one", "rebind_two"} {
+		route, err := h.store.GetBusinessRoute(key)
+		if err != nil || route.BotAccountID != secondID || route.Revision != 2 {
+			t.Fatalf("linked Route %s was inconsistent after rebind: route=%+v err=%v", key, route, err)
+		}
+		var oldBotID, newBotID int64
+		if err := h.store.DB().QueryRow(`SELECT bot_account_id FROM gateway_route_revisions WHERE route_id=? AND revision=1`, route.ID).Scan(&oldBotID); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.store.DB().QueryRow(`SELECT bot_account_id FROM gateway_route_revisions WHERE route_id=? AND revision=2`, route.ID).Scan(&newBotID); err != nil {
+			t.Fatal(err)
+		}
+		if oldBotID != firstID || newBotID != secondID {
+			t.Fatalf("Route %s revision history old=%d new=%d", key, oldBotID, newBotID)
+		}
+	}
+	stale := candidate
+	stale.ChatID = -100990399
+	if err := h.store.MigrateTelegramDestination(stale, destination.Revision, "test-admin"); !errors.Is(err, store.ErrRevisionConflict) {
+		t.Fatalf("stale migration error=%v, want revision conflict", err)
+	}
+	current, _ := h.store.GetTelegramDestination(destinationID)
+	if current.ChatID != candidate.ChatID || current.BotAccountID != secondID || current.Revision != 2 {
+		t.Fatalf("stale migration changed active Destination: %+v", current)
 	}
 }
 

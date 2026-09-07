@@ -94,4 +94,38 @@ func TestRedisQueueDurableReclaimAndDLQMove(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("source remained pending after durable DLQ append: %+v", pending)
 	}
+	observation, err := queue.InspectQueue(ctx)
+	if err != nil || !observation.Available || !observation.Persistence {
+		t.Fatalf("queue health does not prove Redis+AOF availability: %+v err=%v", observation, err)
+	}
+	replayed, err := queue.ReplayFromDLQ(ctx, deliveryID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedAgain, err := queue.ReplayFromDLQ(ctx, deliveryID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed == first || replayedAgain != replayed {
+		t.Fatalf("DLQ replay was not a new idempotent Stream append: first=%q replay=%q again=%q", first, replayed, replayedAgain)
+	}
+	var replayMessage QueueMessage
+	deadline = time.Now().Add(2 * time.Second)
+	for replayMessage.DeliveryID == "" && time.Now().Before(deadline) {
+		messages, readErr := queue.Read(ctx, "replay-worker", 32)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		for _, message := range messages {
+			if message.ID == replayed && message.DeliveryID == deliveryID {
+				replayMessage = message
+			}
+		}
+	}
+	if replayMessage.ID != replayed {
+		t.Fatalf("replayed delivery was not consumable: %+v", replayMessage)
+	}
+	if err := queue.Ack(ctx, replayMessage.ID); err != nil {
+		t.Fatal(err)
+	}
 }

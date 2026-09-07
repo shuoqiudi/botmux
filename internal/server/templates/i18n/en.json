@@ -391,5 +391,22 @@
   "gateway_rotate_confirm": "Rotate this credential? The previous credential will stop working immediately.",
   "gateway_grants_prompt": "Comma-separated route_key:action grants",
   "gateway_audit": "GATEWAY AUDIT",
-  "gateway_audit_empty": "No Gateway audit events"
+  "gateway_audit_empty": "No Gateway audit events",
+  "gateway_health": "GATEWAY HEALTH",
+  "gateway_dlq": "DEAD-LETTER QUEUE",
+  "gateway_dlq_empty": "No active dead-letter deliveries",
+  "gateway_backend_health_url": "Dedicated backend health URL",
+  "gateway_accepted": "accepted",
+  "gateway_succeeded": "succeeded",
+  "gateway_retrying": "retrying",
+  "gateway_reconciling": "reconciling",
+  "gateway_dead_lettered": "dead-lettered",
+  "gateway_queue_depth": "queue depth",
+  "gateway_oldest_age": "oldest pending",
+  "gateway_latency": "average latency",
+  "gateway_attempts": "attempts",
+  "gateway_replay": "REPLAY",
+  "gateway_discard": "DISCARD",
+  "gateway_replay_confirm": "Replay this dead-letter delivery?",
+  "gateway_discard_confirm": "Discard this dead-letter delivery? This cannot be replayed later."
 }

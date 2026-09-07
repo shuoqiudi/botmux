@@ -262,23 +262,39 @@ func TestE2E_GatewayInbound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A delayed poison item remains pending in the PEL, but the worker must
+	// continue consuming later Stream entries instead of blocking the Route.
+	afterPoison := map[string]any{"update_id": float64(106), "message": map[string]any{
+		"chat": map[string]any{"id": float64(chatID)}, "text": "healthy after poison",
+	}}
+	if !h.proxy.ProcessUpdate(botID, afterPoison) {
+		t.Fatal("healthy Update after poison was not durably accepted")
+	}
+	afterPoisonDelivery, err := h.store.GetInboundDeliveryByUpdate(context.Background(), botID, 106)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Eventually(func() bool {
+		d, err := h.store.GetInboundDelivery(context.Background(), afterPoisonDelivery.DeliveryID)
+		return err == nil && d.Status == models.InboundSucceeded
+	}, time.Second, "later healthy item progressed past poison item")
 	h.Eventually(func() bool {
 		d, err := h.store.GetInboundDelivery(context.Background(), poisonDelivery.DeliveryID)
 		return err == nil && d.Status == models.InboundDLQ && d.AttemptCount == 2
 	}, 2*time.Second, "non-2xx delivery exhausted into durable DLQ")
 
 	// Exercise the actual fake Telegram getUpdates owner, not only direct
-	// injection. The poller may advance only after Redis accepted update 106.
-	polled := map[string]any{"update_id": float64(106), "message": map[string]any{
+	// injection. The poller may advance only after Redis accepted update 107.
+	polled := map[string]any{"update_id": float64(107), "message": map[string]any{
 		"chat": map[string]any{"id": float64(chatID)}, "text": "from fake Telegram",
 	}}
 	h.fake.EnqueueUpdate(token, polled)
 	h.proxy.Start()
 	h.Eventually(func() bool {
 		cfg, err := h.store.GetBotConfig(botID)
-		return err == nil && cfg.Offset == 107
+		return err == nil && cfg.Offset == 108
 	}, 2*time.Second, "sole poller durably ingested fake Telegram Update")
-	polledDelivery, err := h.store.GetInboundDeliveryByUpdate(context.Background(), botID, 106)
+	polledDelivery, err := h.store.GetInboundDeliveryByUpdate(context.Background(), botID, 107)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,8 +340,8 @@ func TestE2E_GatewayInbound(t *testing.T) {
 		t.Fatal("offset advanced after Redis append failure")
 	}
 	cfg, _ := h.store.GetBotConfig(botID)
-	if cfg.Offset != 107 {
-		t.Fatalf("offset=%d after append failure, want 107", cfg.Offset)
+	if cfg.Offset != 108 {
+		t.Fatalf("offset=%d after append failure, want 108", cfg.Offset)
 	}
 }
 

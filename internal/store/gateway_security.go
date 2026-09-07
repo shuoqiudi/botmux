@@ -138,6 +138,9 @@ func (s *Store) UpdateBusinessRouteExpected(routeKey string, r models.BusinessRo
 	if n, _ := res.RowsAffected(); n != 1 {
 		return ErrRevisionConflict
 	}
+	if _, err := tx.Exec(`INSERT INTO gateway_backend_health_config(route_id,health_url) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET health_url=excluded.health_url`, id, r.InboundBackendHealthURL); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
 		id, next, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now); err != nil {
 		return err

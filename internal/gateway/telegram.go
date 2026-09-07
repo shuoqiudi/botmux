@@ -149,3 +149,31 @@ func (c *TelegramHTTPClient) AnswerCallback(ctx context.Context, token string, c
 	}
 	return nil
 }
+
+func (c *TelegramHTTPClient) ProbeBot(ctx context.Context, token string) error {
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.call(ctx, token, "getMe", struct{}{}, &result); err != nil {
+		return err
+	}
+	if result.ID == 0 {
+		return &TelegramError{Class: "telegram_rejected", Outcome: TelegramPermanent, WriteObserved: true}
+	}
+	return nil
+}
+
+func (c *TelegramHTTPClient) ProbeDestination(ctx context.Context, token string, chatID int64) error {
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.call(ctx, token, "getChat", struct {
+		ChatID int64 `json:"chat_id"`
+	}{ChatID: chatID}, &result); err != nil {
+		return err
+	}
+	if result.ID == 0 {
+		return &TelegramError{Class: "telegram_rejected", Outcome: TelegramPermanent, WriteObserved: true}
+	}
+	return nil
+}

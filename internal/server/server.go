@@ -43,6 +43,7 @@ type Server struct {
 	proxy          *proxy.Manager
 	bridge         *bridge.Manager
 	gateway        *gateway.Service
+	gatewayOps     *gateway.Operations
 	mu             sync.RWMutex
 	bots           map[int64]*bot.Bot // botID -> Bot (for Telegram API calls)
 	webhookPath    string
@@ -137,6 +138,21 @@ func (s *Server) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(403)
 			w.Write([]byte(`{"error":"forbidden"}`))
+			return
+		}
+		next(w, r)
+	})
+}
+
+// gatewayOperatorOnly permits read/recovery operations to administrators and
+// the narrower operator role. Gateway configuration remains admin-only.
+func (s *Server) gatewayOperatorOnly(next http.HandlerFunc) http.HandlerFunc {
+	return s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		user := getAuthUser(r)
+		if user == nil || (user.Role != "admin" && user.Role != "operator") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden"}`))
 			return
 		}
 		next(w, r)
@@ -352,6 +368,10 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/gateway/v1/workloads", s.adminOnly(s.handleGatewayWorkloads))
 	mux.HandleFunc("/api/gateway/v1/workloads/", s.adminOnly(s.handleGatewayWorkloads))
 	mux.HandleFunc("/api/gateway/v1/audit", s.adminOnly(s.handleGatewayAudit))
+	mux.HandleFunc("/api/gateway/v1/ops/health", s.gatewayOperatorOnly(s.handleGatewayOpsHealth))
+	mux.HandleFunc("/api/gateway/v1/ops/dlq", s.gatewayOperatorOnly(s.handleGatewayOpsDLQ))
+	mux.HandleFunc("/api/gateway/v1/ops/dlq/", s.gatewayOperatorOnly(s.handleGatewayOpsDLQ))
+	mux.HandleFunc("/api/gateway/v1/ops/routes/", s.gatewayOperatorOnly(s.handleGatewayRouteOps))
 
 	// Workload-authenticated business interface. This intentionally does not
 	// accept admin sessions or the legacy user API keys.
@@ -2505,10 +2525,10 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "user"
 	}
-	if req.Role != "admin" && req.Role != "user" {
+	if req.Role != "admin" && req.Role != "operator" && req.Role != "user" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
-		w.Write([]byte(`{"error":"role must be admin or user"}`))
+		w.Write([]byte(`{"error":"role must be admin, operator, or user"}`))
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)

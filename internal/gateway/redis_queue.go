@@ -30,6 +30,7 @@ type RedisQueue struct {
 	index       string
 	dlq         string
 	dlqIndex    string
+	replayIndex string
 	claimMu     sync.Mutex
 	claimCursor string
 }
@@ -53,7 +54,8 @@ func NewRedisQueue(ctx context.Context, config RedisConfig) (*RedisQueue, error)
 
 func newRedisQueue(client *redis.Client, namespace string) *RedisQueue {
 	return &RedisQueue{client: client, stream: namespace + ":outbound", group: namespace + ":outbound_workers",
-		index: namespace + ":outbound:accepted", dlq: namespace + ":outbound:dlq", dlqIndex: namespace + ":outbound:dlq:index"}
+		index: namespace + ":outbound:accepted", dlq: namespace + ":outbound:dlq", dlqIndex: namespace + ":outbound:dlq:index",
+		replayIndex: namespace + ":outbound:replay:index"}
 }
 
 func (q *RedisQueue) verify(ctx context.Context) error {
@@ -192,6 +194,56 @@ return id
 func (q *RedisQueue) MoveToDLQAndAck(ctx context.Context, message QueueMessage, metadata DLQMetadata) error {
 	return moveOutboundToDLQ.Run(ctx, q.client, []string{q.stream, q.dlq, q.dlqIndex}, message.ID, message.DeliveryID,
 		metadata.RouteKey, metadata.AttemptCount, metadata.ErrorClass, q.group).Err()
+}
+
+var replayOutboundDLQ = redis.NewScript(`
+local replay_key = ARGV[1] .. ':' .. ARGV[2]
+local existing = redis.call('HGET', KEYS[3], replay_key)
+if existing then
+  return existing
+end
+redis.call('HDEL', KEYS[2], ARGV[1])
+redis.call('HDEL', KEYS[4], ARGV[1])
+local id = redis.call('XADD', KEYS[1], '*', 'delivery_id', ARGV[1], 'direction', 'outbound')
+redis.call('HSET', KEYS[2], ARGV[1], id)
+redis.call('HSET', KEYS[3], replay_key, id)
+return id
+`)
+
+func (q *RedisQueue) ReplayFromDLQ(ctx context.Context, deliveryID string, generation int) (string, error) {
+	return replayOutboundDLQ.Run(ctx, q.client, []string{q.stream, q.index, q.replayIndex, q.dlqIndex},
+		deliveryID, generation).Text()
+}
+
+func (q *RedisQueue) InspectQueue(ctx context.Context) (QueueObservation, error) {
+	result := QueueObservation{CheckedAt: time.Now().UTC()}
+	if err := q.client.Ping(ctx).Err(); err != nil {
+		return result, err
+	}
+	result.Available = true
+	persistence, err := q.client.Info(ctx, "persistence").Result()
+	if err != nil {
+		return result, err
+	}
+	result.Persistence = infoValue(persistence, "aof_enabled") == "1"
+	pending, err := q.client.XPending(ctx, q.stream, q.group).Result()
+	if err != nil && !strings.Contains(err.Error(), "NOGROUP") {
+		return result, err
+	}
+	if pending != nil {
+		result.Pending = pending.Count
+	}
+	groups, err := q.client.XInfoGroups(ctx, q.stream).Result()
+	if err != nil && !strings.Contains(err.Error(), "no such key") {
+		return result, err
+	}
+	for _, group := range groups {
+		if group.Name == q.group {
+			result.Depth = group.Lag + group.Pending
+			break
+		}
+	}
+	return result, nil
 }
 
 func (q *RedisQueue) Close() error { return q.client.Close() }

@@ -4310,6 +4310,7 @@ function closeUserProfile() {
       <label>Role</label>
       <select id="userEditRole" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;color:var(--text);font-family:var(--ff-mono);font-size:13px;outline:none">
         <option value="user">User</option>
+		<option value="operator">Operator</option>
         <option value="admin">Admin</option>
       </select>
     </div>
@@ -4390,6 +4391,16 @@ function closeUserProfile() {
       </div>
     </div>
     <div id="businessRoutesList"></div>
+	<div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 8px">
+	  <div class="panel-title" id="gatewayHealthTitle">Gateway health</div>
+	  <button class="btn btn-sm" id="gatewayHealthRefreshBtn" onclick="loadGatewayHealth()">REFRESH</button>
+	</div>
+	<div id="gatewayHealthList"></div>
+	<div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 8px">
+	  <div class="panel-title" id="gatewayDLQTitle">Dead-letter queue</div>
+	  <button class="btn btn-sm" id="gatewayDLQRefreshBtn" onclick="loadGatewayDLQ()">REFRESH</button>
+	</div>
+	<div id="gatewayDLQList"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 8px">
       <div class="panel-title" id="gatewayWorkloadsTitle">Workloads &amp; grants</div>
       <button class="btn btn-primary btn-sm" id="gatewayWorkloadAddBtn" onclick="createGatewayWorkload()">+ WORKLOAD</button>
@@ -4424,6 +4435,7 @@ function closeUserProfile() {
         <div class="modal-field"><label>route_key</label><input id="businessRouteKey" placeholder="it_manage" pattern="[a-z0-9_-]+"></div>
         <div class="modal-field"><label id="businessRouteNameLabel">Display name</label><input id="businessRouteName"></div>
         <div class="modal-field"><label id="businessRouteBackendLabel">Inbound backend URL</label><input id="businessRouteBackend" type="url" placeholder="http://service/telegram"></div>
+		<div class="modal-field"><label id="businessRouteBackendHealthLabel">Backend health URL</label><input id="businessRouteBackendHealth" type="url" placeholder="http://service/health"></div>
         <div class="modal-field"><label id="businessRouteCallersLabel">Allowed callers</label><input id="businessRouteCallers" placeholder="it_manage, it_monitor"></div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:18px;margin-top:8px">
@@ -4454,9 +4466,11 @@ function applyBusinessRouteLang() {
     businessDestinationNameLabel: 'display_name', businessBotTokenLabel: 'bot_token_write_only',
     businessDestinationChatLabel: 'chat_id', businessRouteNameLabel: 'display_name',
     businessRouteBackendLabel: 'inbound_backend', businessRouteCallersLabel: 'allowed_callers',
+	businessRouteBackendHealthLabel: 'gateway_backend_health_url',
     businessRouteInboundLabel: 'inbound', businessRouteOutboundLabel: 'outbound',
     businessRouteEnabledLabel: 'active', businessRouteCancelBtn: 'cancel', businessRouteSaveBtn: 'validate_create',
     gatewayWorkloadsTitle: 'gateway_workloads', gatewayWorkloadAddBtn: 'gateway_workload_create',
+	gatewayHealthTitle: 'gateway_health', gatewayHealthRefreshBtn: 'refresh', gatewayDLQTitle: 'gateway_dlq', gatewayDLQRefreshBtn: 'refresh',
     gatewayAuditTitle: 'gateway_audit', gatewayAuditRefreshBtn: 'refresh'
   };
   for (const [id, key] of Object.entries(values)) {
@@ -4468,7 +4482,7 @@ function applyBusinessRouteLang() {
 async function showBusinessRoutes() {
   document.getElementById('businessRoutesModal').style.display = 'flex';
   applyBusinessRouteLang();
-  await Promise.all([loadBusinessRoutes(), loadGatewayWorkloads(), loadGatewayAudit()]);
+  await Promise.all([loadBusinessRoutes(), loadGatewayHealth(), loadGatewayDLQ(), loadGatewayWorkloads(), loadGatewayAudit()]);
 }
 
 function closeBusinessRoutes() { document.getElementById('businessRoutesModal').style.display = 'none'; }
@@ -4476,7 +4490,9 @@ function closeBusinessRoutes() { document.getElementById('businessRoutesModal').
 async function loadBusinessRoutes() {
   const el = document.getElementById('businessRoutesList');
   try {
-    businessRoutesCache = await api('/api/gateway/v1/routes');
+	const routes = await api('/api/gateway/v1/routes');
+	const metrics = await Promise.all(routes.map(route => api(`/api/gateway/v1/ops/routes/${encodeURIComponent(route.route_key)}`).catch(() => null)));
+	businessRoutesCache = routes.map((route, index) => ({...route, _ops: metrics[index]}));
     if (!businessRoutesCache.length) {
       el.innerHTML = `<div class="route-empty"><div>${t('business_routes_empty')}</div><div class="route-empty-hint">${t('business_routes_empty_hint')}</div></div>`;
       return;
@@ -4499,6 +4515,9 @@ async function loadBusinessRoutes() {
             <span class="badge ${route.outbound_enabled ? 'badge-proxy' : ''}">${t('outbound')}: ${route.outbound_enabled ? t('enabled') : t('disabled')}</span>
             <span class="badge">${t('backend_credential')}: ${route.backend_credential_set ? t('configured') : t('not_configured')}</span>
           </div>
+		  ${route._ops ? `<div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:6px">
+		  ${t('gateway_accepted')}: ${route._ops.counts.accepted} · ${t('gateway_succeeded')}: ${route._ops.counts.succeeded} · ${t('gateway_retrying')}: ${route._ops.counts.retrying} · ${t('gateway_reconciling')}: ${route._ops.counts.reconciling} · ${t('gateway_dead_lettered')}: ${route._ops.counts.dead_lettered} · ${t('gateway_queue_depth')}: ${route._ops.queue_depth} · ${t('gateway_oldest_age')}: ${route._ops.oldest_pending_age_ms}ms · ${t('gateway_latency')}: ${route._ops.average_end_to_end_latency_ms}ms</div>
+		  <div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:4px">${Object.entries(route._ops.components).map(([name,value]) => `${esc(name)}: <span style="color:${value.status === 'healthy' ? 'var(--green)' : value.status === 'unhealthy' ? 'var(--magenta)' : 'var(--amber)'}">${esc(value.status)}</span>`).join(' · ')}</div>` : ''}
         </div>
         <div class="route-actions">
           <button class="btn btn-sm" onclick="editBusinessRoute('${route.route_key}')">${t('edit')}</button>
@@ -4513,7 +4532,7 @@ async function loadBusinessRoutes() {
 function showBusinessRouteSetup() {
   document.getElementById('businessRouteSetupModal').style.display = 'flex';
   document.getElementById('businessRouteSetupResult').textContent = '';
-  for (const id of ['businessBotName','businessBotToken','businessDestinationName','businessDestinationChat','businessRouteKey','businessRouteName','businessRouteBackend','businessRouteCallers']) {
+  for (const id of ['businessBotName','businessBotToken','businessDestinationName','businessDestinationChat','businessRouteKey','businessRouteName','businessRouteBackend','businessRouteBackendHealth','businessRouteCallers']) {
     document.getElementById(id).value = '';
   }
   document.getElementById('businessRouteInbound').checked = false;
@@ -4536,6 +4555,7 @@ async function createBusinessRouteSetup() {
     route: {
       route_key: document.getElementById('businessRouteKey').value.trim(), display_name: document.getElementById('businessRouteName').value.trim(),
       inbound_enabled: inbound, inbound_backend_url: document.getElementById('businessRouteBackend').value.trim(),
+	  inbound_backend_health_url: document.getElementById('businessRouteBackendHealth').value.trim(),
       outbound_enabled: document.getElementById('businessRouteOutbound').checked,
       allowed_callers: document.getElementById('businessRouteCallers').value.split(',').map(v => v.trim()).filter(Boolean),
       enabled: document.getElementById('businessRouteEnabled').checked
@@ -4592,6 +4612,7 @@ async function editBusinessRoute(key) {
     await api(`/api/gateway/v1/routes/${route.route_key}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
       route_key:route.route_key, display_name:routeName, bot_account_id:account.id, destination_id:destination.id,
       inbound_enabled:asEnabled(inboundValue), inbound_backend_url:route.inbound_backend_url || '', inbound_backend_token:backendCredential,
+	  inbound_backend_health_url:route.inbound_backend_health_url || '',
       outbound_enabled:asEnabled(outboundValue), allowed_callers:route.allowed_callers, enabled:asEnabled(enabledValue), expected_revision:latestRoute.revision
     })});
     toast(t('business_route_updated'));
@@ -4644,6 +4665,35 @@ async function loadGatewayAudit() {
   try { const events = await api('/api/gateway/v1/audit?limit=50');
     el.innerHTML = events.length ? events.map(event => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:10px"><code>${esc(event.action)}</code> · ${esc(event.actor_id)} · ${t('revision')} ${event.revision}<div style="color:var(--text3)">${esc(JSON.stringify(event.diff))}</div></div>`).join('') : `<div>${t('gateway_audit_empty')}</div>`;
   } catch(e) { el.textContent = e.message; }
+}
+
+async function loadGatewayHealth() {
+	const el = document.getElementById('gatewayHealthList');
+	try {
+		const health = await api('/api/gateway/v1/ops/health');
+		const entries = [['web_app', health.web_app], ['redis', health.redis], ['inbound_worker', health.inbound_worker], ['outbound_worker', health.outbound_worker]];
+		el.innerHTML = entries.map(([name, value]) => `<span class="badge" style="margin:0 6px 6px 0">${esc(name)}: <span style="color:${value.status === 'healthy' ? 'var(--green)' : value.status === 'unhealthy' ? 'var(--magenta)' : 'var(--amber)'}">${esc(value.status)}</span></span>`).join('');
+	} catch(e) { el.textContent = e.message; }
+}
+
+async function loadGatewayDLQ() {
+	const el = document.getElementById('gatewayDLQList');
+	try {
+		const items = await api('/api/gateway/v1/ops/dlq');
+		if (!items.length) { el.textContent = t('gateway_dlq_empty'); return; }
+		el.innerHTML = items.map(item => `<div class="route-item" style="margin-bottom:6px"><div class="route-body"><code>${esc(item.route_key)}</code> · <code>${esc(item.delivery_id)}</code><div style="font-size:10px;color:var(--text3);margin-top:4px">${esc(item.direction)} · ${esc(item.error_class)} · ${t('gateway_attempts')}: ${item.attempt_count}</div></div><div class="route-actions"><button class="btn btn-sm gateway-dlq-replay" data-delivery="${esc(item.delivery_id)}">${t('gateway_replay')}</button><button class="btn btn-sm gateway-dlq-discard" data-delivery="${esc(item.delivery_id)}">${t('gateway_discard')}</button></div></div>`).join('');
+		el.querySelectorAll('.gateway-dlq-replay').forEach(button => button.addEventListener('click', () => operateGatewayDLQ(button.dataset.delivery, 'replay')));
+		el.querySelectorAll('.gateway-dlq-discard').forEach(button => button.addEventListener('click', () => operateGatewayDLQ(button.dataset.delivery, 'discard')));
+	} catch(e) { el.textContent = e.message; }
+}
+
+async function operateGatewayDLQ(deliveryID, action) {
+	const key = action === 'replay' ? 'gateway_replay_confirm' : 'gateway_discard_confirm';
+	if (!confirm(t(key))) return;
+	try {
+		await api(`/api/gateway/v1/ops/dlq/${encodeURIComponent(deliveryID)}/${action}`, {method:'POST'});
+		await Promise.all([loadGatewayDLQ(), loadBusinessRoutes(), loadGatewayAudit()]);
+	} catch(e) { toast(e.message, 'error'); }
 }
 
 async function testBusinessRoute(key) {

@@ -51,6 +51,7 @@ type Inbound struct {
 	queue  InboundQueue
 	client *http.Client
 	config InboundConfig
+	health workerHeartbeat
 }
 
 type InboundConfig struct {
@@ -178,15 +179,19 @@ func (i *Inbound) IngestUpdate(ctx context.Context, botID int64, update map[stri
 }
 
 func (i *Inbound) Run(ctx context.Context) error {
+	i.health.start()
+	defer i.health.stop()
 	if err := i.queue.EnsureGroup(ctx); err != nil {
 		return err
 	}
 	for ctx.Err() == nil {
+		i.health.beat()
 		messages, err := i.queue.ReadNew(ctx, i.config.Consumer, i.config.PollInterval, i.config.BatchSize)
 		if err != nil && ctx.Err() == nil {
 			return err
 		}
 		for _, message := range messages {
+			i.health.beat()
 			_ = i.process(ctx, message)
 		}
 		claimed, err := i.queue.ClaimStale(ctx, i.config.Consumer, i.config.ClaimMinIdle, i.config.BatchSize)
@@ -194,11 +199,14 @@ func (i *Inbound) Run(ctx context.Context) error {
 			return err
 		}
 		for _, message := range claimed {
+			i.health.beat()
 			_ = i.process(ctx, message)
 		}
 	}
 	return ctx.Err()
 }
+
+func (i *Inbound) WorkerHealth() (bool, time.Time) { return i.health.snapshot() }
 
 func (i *Inbound) process(ctx context.Context, message StreamMessage) error {
 	delivery, err := i.store.GetInboundDelivery(ctx, message.DeliveryID)

@@ -116,6 +116,7 @@ type Service struct {
 	config   OutboundConfig
 	gateMu   sync.Mutex
 	botGates map[int64]time.Time
+	health   workerHeartbeat
 }
 
 func NewService(repo Repository, queue OutboundQueue, telegram Telegram, consumer string) *Service {
@@ -172,9 +173,11 @@ func NewServiceWithConfig(repo Repository, queue OutboundQueue, telegram Telegra
 func (s *Service) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
+	s.health.start()
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer s.health.stop()
 		s.runOutbound(ctx)
 	}()
 }
@@ -333,6 +336,7 @@ func newOpaqueID() string {
 
 func (s *Service) runOutbound(ctx context.Context) {
 	for ctx.Err() == nil {
+		s.health.beat()
 		messages, err := s.queue.Read(ctx, s.consumer, s.config.BatchSize)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -341,6 +345,7 @@ func (s *Service) runOutbound(ctx context.Context) {
 			continue
 		}
 		for _, message := range messages {
+			s.health.beat()
 			s.processOutbound(ctx, message)
 		}
 		claimed, err := s.queue.ClaimStale(ctx, s.consumer, s.config.ClaimMinIdle, s.config.BatchSize)
@@ -351,10 +356,13 @@ func (s *Service) runOutbound(ctx context.Context) {
 			continue
 		}
 		for _, message := range claimed {
+			s.health.beat()
 			s.processOutbound(ctx, message)
 		}
 	}
 }
+
+func (s *Service) WorkerHealth() (bool, time.Time) { return s.health.snapshot() }
 
 func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 	var delivery *models.GatewayDelivery

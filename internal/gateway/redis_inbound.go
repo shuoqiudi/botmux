@@ -11,11 +11,13 @@ import (
 )
 
 type RedisInboundQueue struct {
-	client redis.UniversalClient
-	stream string
-	group  string
-	index  string
-	dlq    string
+	client      redis.UniversalClient
+	stream      string
+	group       string
+	index       string
+	dlq         string
+	dlqIndex    string
+	replayIndex string
 }
 
 func NewRedisInboundQueue(client redis.UniversalClient) *RedisInboundQueue {
@@ -26,7 +28,8 @@ func NewRedisInboundQueue(client redis.UniversalClient) *RedisInboundQueue {
 // production constructor retains stable Stream names.
 func NewRedisInboundQueueWithNamespace(client redis.UniversalClient, namespace string) *RedisInboundQueue {
 	return &RedisInboundQueue{client: client, stream: namespace + ":inbound", group: namespace + ":inbound:workers",
-		index: namespace + ":inbound:index", dlq: namespace + ":inbound:dlq"}
+		index: namespace + ":inbound:index", dlq: namespace + ":inbound:dlq", dlqIndex: namespace + ":inbound:dlq:index",
+		replayIndex: namespace + ":inbound:replay:index"}
 }
 
 var appendInboundOnce = redis.NewScript(`
@@ -106,18 +109,74 @@ func (q *RedisInboundQueue) Ack(ctx context.Context, streamID string) error {
 }
 
 var moveInboundToDLQ = redis.NewScript(`
+local existing = redis.call('HGET', KEYS[3], ARGV[2])
+if existing then
+  redis.call('XACK', KEYS[1], ARGV[5], ARGV[1])
+  return existing
+end
 local id = redis.call('XADD', KEYS[2], '*',
   'delivery_id', ARGV[2],
   'source_stream_id', ARGV[1],
   'error_class', ARGV[3],
   'attempt_count', ARGV[4])
+redis.call('HSET', KEYS[3], ARGV[2], id)
 redis.call('XACK', KEYS[1], ARGV[5], ARGV[1])
 return id
 `)
 
 func (q *RedisInboundQueue) MoveToDLQAndAck(ctx context.Context, message StreamMessage, class string, attempts int) error {
-	return moveInboundToDLQ.Run(ctx, q.client, []string{q.stream, q.dlq},
+	return moveInboundToDLQ.Run(ctx, q.client, []string{q.stream, q.dlq, q.dlqIndex},
 		message.ID, message.DeliveryID, class, attempts, q.group).Err()
+}
+
+var replayInboundDLQ = redis.NewScript(`
+local replay_key = ARGV[1] .. ':' .. ARGV[2]
+local existing = redis.call('HGET', KEYS[3], replay_key)
+if existing then
+  return existing
+end
+redis.call('HDEL', KEYS[2], ARGV[1])
+redis.call('HDEL', KEYS[4], ARGV[1])
+local id = redis.call('XADD', KEYS[1], '*', 'delivery_id', ARGV[1], 'direction', 'inbound')
+redis.call('HSET', KEYS[2], ARGV[1], id)
+redis.call('HSET', KEYS[3], replay_key, id)
+return id
+`)
+
+func (q *RedisInboundQueue) ReplayFromDLQ(ctx context.Context, deliveryID string, generation int) (string, error) {
+	return replayInboundDLQ.Run(ctx, q.client, []string{q.stream, q.index, q.replayIndex, q.dlqIndex},
+		deliveryID, generation).Text()
+}
+
+func (q *RedisInboundQueue) InspectQueue(ctx context.Context) (QueueObservation, error) {
+	result := QueueObservation{CheckedAt: time.Now().UTC()}
+	if err := q.client.Ping(ctx).Err(); err != nil {
+		return result, err
+	}
+	result.Available = true
+	persistence, err := q.client.Info(ctx, "persistence").Result()
+	if err != nil {
+		return result, err
+	}
+	result.Persistence = strings.Contains(persistence, "aof_enabled:1")
+	pending, err := q.client.XPending(ctx, q.stream, q.group).Result()
+	if err != nil && !strings.Contains(err.Error(), "NOGROUP") {
+		return result, err
+	}
+	if pending != nil {
+		result.Pending = pending.Count
+	}
+	groups, err := q.client.XInfoGroups(ctx, q.stream).Result()
+	if err != nil && !strings.Contains(err.Error(), "no such key") {
+		return result, err
+	}
+	for _, group := range groups {
+		if group.Name == q.group {
+			result.Depth = group.Lag + group.Pending
+			break
+		}
+	}
+	return result, nil
 }
 
 // VerifyDurability rejects ephemeral Redis deployments before workers start.

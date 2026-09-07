@@ -15,6 +15,10 @@ func (s *Server) SetGatewayService(service *gateway.Service) {
 	s.gateway = service
 }
 
+func (s *Server) SetGatewayOperations(operations *gateway.Operations) {
+	s.gatewayOps = operations
+}
+
 func workloadCredential(r *http.Request) string {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {

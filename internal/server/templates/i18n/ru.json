@@ -391,5 +391,22 @@
   "gateway_rotate_confirm": "Ротировать учётные данные? Предыдущие сразу перестанут работать.",
   "gateway_grants_prompt": "Права route_key:action через запятую",
   "gateway_audit": "АУДИТ GATEWAY",
-  "gateway_audit_empty": "Нет событий аудита Gateway"
+  "gateway_audit_empty": "Нет событий аудита Gateway",
+  "gateway_health": "СОСТОЯНИЕ GATEWAY",
+  "gateway_dlq": "ОЧЕРЕДЬ НЕОБРАБОТАННЫХ",
+  "gateway_dlq_empty": "Нет активных необработанных доставок",
+  "gateway_backend_health_url": "Отдельный URL проверки бэкенда",
+  "gateway_accepted": "принято",
+  "gateway_succeeded": "доставлено",
+  "gateway_retrying": "повтор",
+  "gateway_reconciling": "сверка",
+  "gateway_dead_lettered": "в DLQ",
+  "gateway_queue_depth": "глубина очереди",
+  "gateway_oldest_age": "самое старое ожидание",
+  "gateway_latency": "средняя задержка",
+  "gateway_attempts": "попытки",
+  "gateway_replay": "ПОВТОРИТЬ",
+  "gateway_discard": "ОТБРОСИТЬ",
+  "gateway_replay_confirm": "Повторить эту доставку из DLQ?",
+  "gateway_discard_confirm": "Отбросить эту доставку из DLQ? После этого повтор невозможен."
 }

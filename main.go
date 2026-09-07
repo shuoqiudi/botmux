@@ -120,6 +120,8 @@ func main() {
 	pm := proxy.NewManager(st, telegramAPIURL)
 	var outboundQueue *gateway.RedisQueue
 	var redisClient *redis.Client
+	var inboundQueue *gateway.RedisInboundQueue
+	var inboundGateway *gateway.Inbound
 	var inboundCancel context.CancelFunc
 	if *redisAddr != "" {
 		redisPassword, err := readSingleLineFile(*redisPasswordFile)
@@ -136,23 +138,23 @@ func main() {
 		}
 
 		redisClient = redis.NewClient(&redis.Options{Addr: *redisAddr, Password: redisPassword, DB: *redisDB})
-		queue := gateway.NewRedisInboundQueue(redisClient)
+		inboundQueue = gateway.NewRedisInboundQueue(redisClient)
 		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err = redisClient.Ping(checkCtx).Err()
 		if err == nil {
-			err = queue.VerifyDurability(checkCtx)
+			err = inboundQueue.VerifyDurability(checkCtx)
 		}
 		cancel()
 		if err != nil {
 			log.Fatalf("Gateway Redis is not durably available: %v", err)
 		}
-		inbound := gateway.NewInbound(st, queue, nil, gateway.InboundConfig{})
-		pm.SetInboundGateway(inbound)
+		inboundGateway = gateway.NewInbound(st, inboundQueue, nil, gateway.InboundConfig{})
+		pm.SetInboundGateway(inboundGateway)
 		var inboundCtx context.Context
 		inboundCtx, inboundCancel = context.WithCancel(context.Background())
 		go func() {
 			for inboundCtx.Err() == nil {
-				if err := inbound.Run(inboundCtx); err != nil && inboundCtx.Err() == nil {
+				if err := inboundGateway.Run(inboundCtx); err != nil && inboundCtx.Err() == nil {
 					log.Printf("[gateway] inbound worker stopped; retrying")
 				}
 				select {
@@ -180,12 +182,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var gatewayService *gateway.Service
 	if outboundQueue != nil {
-		gatewayService := gateway.NewService(st, outboundQueue, gateway.NewTelegramHTTPClient(telegramAPIURL), "")
+		gatewayService = gateway.NewService(st, outboundQueue, gateway.NewTelegramHTTPClient(telegramAPIURL), "")
 		gatewayService.Start(ctx)
 		defer gatewayService.Stop()
 		srv.SetGatewayService(gatewayService)
 	}
+	srv.SetGatewayOperations(gateway.NewOperations(st, outboundQueue, inboundQueue, gatewayService, inboundGateway,
+		gateway.NewTelegramHTTPClient(telegramAPIURL), nil))
 
 	// Register CLI bot if token is provided
 	if *token != "" {

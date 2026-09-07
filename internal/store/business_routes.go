@@ -75,6 +75,11 @@ func (s *Store) migrateBusinessRoutes() error {
 			created_at TEXT NOT NULL,
 			PRIMARY KEY(route_id, revision)
 		);
+		CREATE TABLE IF NOT EXISTS gateway_backend_health_config (
+			route_id INTEGER PRIMARY KEY,
+			health_url TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY(route_id) REFERENCES gateway_business_routes(id)
+		);
 		CREATE TRIGGER IF NOT EXISTS gateway_business_route_key_immutable
 		BEFORE UPDATE OF route_key ON gateway_business_routes
 		WHEN NEW.route_key <> OLD.route_key
@@ -225,7 +230,7 @@ func (s *Store) scanBusinessRoute(scanner interface{ Scan(...any) error }) (*mod
 	var r models.BusinessRoute
 	var callers, backendCiphertext string
 	err := scanner.Scan(&r.ID, &r.RouteKey, &r.DisplayName, &r.BotAccountID, &r.DestinationID,
-		&r.InboundEnabled, &r.InboundBackendURL, &backendCiphertext, &r.OutboundEnabled, &callers, &r.Enabled,
+		&r.InboundEnabled, &r.InboundBackendURL, &r.InboundBackendHealthURL, &backendCiphertext, &r.OutboundEnabled, &callers, &r.Enabled,
 		&r.Revision, &r.Status, &r.LastValidatedAt, &r.CreatedAt, &r.UpdatedAt,
 		&r.BotAccountName, &r.BotUsername, &r.DestinationName, &r.DestinationChatID)
 	if err != nil {
@@ -249,12 +254,13 @@ func (s *Store) scanBusinessRoute(scanner interface{ Scan(...any) error }) (*mod
 
 const businessRouteSelect = `
 	SELECT r.id,r.route_key,r.display_name,r.bot_account_id,r.destination_id,
-		r.inbound_enabled,r.inbound_backend_url,r.inbound_backend_token_ciphertext,r.outbound_enabled,r.allowed_callers,r.enabled,
+		r.inbound_enabled,r.inbound_backend_url,COALESCE(h.health_url,''),r.inbound_backend_token_ciphertext,r.outbound_enabled,r.allowed_callers,r.enabled,
 		r.revision,r.status,r.last_validated_at,r.created_at,r.updated_at,
 		a.name,a.username,d.name,d.chat_id
 	FROM gateway_business_routes r
 	JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
-	JOIN gateway_telegram_destinations d ON d.id=r.destination_id`
+	JOIN gateway_telegram_destinations d ON d.id=r.destination_id
+	LEFT JOIN gateway_backend_health_config h ON h.route_id=r.id`
 
 func (s *Store) AddBusinessRoute(r models.BusinessRoute) (int64, error) {
 	tx, err := s.db.Begin()
@@ -289,6 +295,9 @@ func insertBusinessRoute(s *Store, exec sqlExecer, r models.BusinessRoute) (int6
 		return 0, err
 	}
 	id, _ := res.LastInsertId()
+	if _, err := exec.Exec(`INSERT INTO gateway_backend_health_config(route_id,health_url) VALUES(?,?)`, id, r.InboundBackendHealthURL); err != nil {
+		return 0, err
+	}
 	_, err = exec.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
 		id, 1, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now)
 	return id, err
@@ -323,6 +332,9 @@ func (s *Store) UpdateBusinessRoute(routeKey string, r models.BusinessRoute) err
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return errors.New("business route was modified concurrently")
+	}
+	if _, err := tx.Exec(`INSERT INTO gateway_backend_health_config(route_id,health_url) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET health_url=excluded.health_url`, existing.ID, r.InboundBackendHealthURL); err != nil {
+		return err
 	}
 	_, err = tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
 		existing.ID, nextRevision, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now)

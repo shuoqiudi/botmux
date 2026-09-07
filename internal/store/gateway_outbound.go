@@ -123,8 +123,21 @@ func (s *Store) migrateGatewayOutbound() error {
 	}
 	if !hasNextAttempt {
 		_, err = s.db.Exec(`ALTER TABLE gateway_deliveries ADD COLUMN next_attempt_at TEXT NOT NULL DEFAULT ''`)
+		if err != nil {
+			return err
+		}
 	}
-	return err
+	for _, column := range []struct{ name, ddl string }{
+		{"state", "TEXT NOT NULL DEFAULT 'active'"},
+		{"replay_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"acted_at", "TEXT NOT NULL DEFAULT ''"},
+		{"acted_by", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := addColumnIfMissing(s.db, "gateway_dlq", column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CreateGatewayWorkload provisions a workload credential hash. The plaintext
@@ -395,9 +408,10 @@ func (s *Store) MarkGatewayDeliveryDeadLettered(ctx context.Context, id, attempt
 	}
 	defer tx.Rollback()
 	now := nowRFC3339()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_dlq(delivery_id,route_id,source_stream_id,error_class,attempt_count,entered_at)
-		SELECT id,route_id,?,?,?,? FROM gateway_deliveries WHERE id=?
-		ON CONFLICT(delivery_id) DO NOTHING`, sourceID, safeClass, attempts, now, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_dlq(delivery_id,route_id,source_stream_id,error_class,attempt_count,entered_at,state,acted_at,acted_by)
+		SELECT id,route_id,?,?,?,?,'active','','' FROM gateway_deliveries WHERE id=?
+		ON CONFLICT(delivery_id) DO UPDATE SET source_stream_id=excluded.source_stream_id,error_class=excluded.error_class,
+		attempt_count=excluded.attempt_count,entered_at=excluded.entered_at,state='active',acted_at='',acted_by=''`, sourceID, safeClass, attempts, now, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE gateway_deliveries SET status='dead-lettered',safe_error_class=?,next_attempt_at='',completed_at=?,updated_at=? WHERE id=?`, safeClass, now, now, id); err != nil {

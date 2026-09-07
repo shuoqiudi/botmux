@@ -51,6 +51,20 @@ func (s *Store) migrateInboundDeliveries() error {
 			UNIQUE(delivery_id, attempt_number),
 			FOREIGN KEY(delivery_id) REFERENCES gateway_inbound_deliveries(delivery_id)
 		);
+		CREATE TABLE IF NOT EXISTS gateway_inbound_dlq (
+			delivery_id TEXT PRIMARY KEY,
+			route_id INTEGER NOT NULL,
+			source_stream_id TEXT NOT NULL,
+			error_class TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL,
+			entered_at TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'active',
+			replay_count INTEGER NOT NULL DEFAULT 0,
+			acted_at TEXT NOT NULL DEFAULT '',
+			acted_by TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY(delivery_id) REFERENCES gateway_inbound_deliveries(delivery_id),
+			FOREIGN KEY(route_id) REFERENCES gateway_business_routes(id)
+		);
 	`)
 	return err
 }
@@ -245,7 +259,21 @@ func (s *Store) MarkInboundDLQ(ctx context.Context, deliveryID, class string) er
 	s.gatewayMu.Lock()
 	defer s.gatewayMu.Unlock()
 
-	_, err := s.db.ExecContext(ctx, `UPDATE gateway_inbound_deliveries SET status=?,next_attempt_at='',last_error_class=?,updated_at=? WHERE delivery_id=?`,
-		models.InboundDLQ, class, time.Now().UTC().Format(time.RFC3339Nano), deliveryID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_inbound_dlq(delivery_id,route_id,source_stream_id,error_class,attempt_count,entered_at,state,acted_at,acted_by)
+		SELECT delivery_id,route_id,stream_id,?,attempt_count,?,'active','','' FROM gateway_inbound_deliveries WHERE delivery_id=?
+		ON CONFLICT(delivery_id) DO UPDATE SET source_stream_id=excluded.source_stream_id,error_class=excluded.error_class,
+		attempt_count=excluded.attempt_count,entered_at=excluded.entered_at,state='active',acted_at='',acted_by=''`, class, now, deliveryID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE gateway_inbound_deliveries SET status=?,next_attempt_at='',last_error_class=?,updated_at=? WHERE delivery_id=?`,
+		models.InboundDLQ, class, now, deliveryID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

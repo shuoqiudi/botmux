@@ -347,17 +347,18 @@ func (s *Server) handleTelegramDestinations(w http.ResponseWriter, r *http.Reque
 }
 
 type businessRouteInput struct {
-	RouteKey            string   `json:"route_key"`
-	DisplayName         string   `json:"display_name"`
-	BotAccountID        int64    `json:"bot_account_id"`
-	DestinationID       int64    `json:"destination_id"`
-	InboundEnabled      bool     `json:"inbound_enabled"`
-	InboundBackendURL   string   `json:"inbound_backend_url"`
-	InboundBackendToken string   `json:"inbound_backend_token"`
-	OutboundEnabled     bool     `json:"outbound_enabled"`
-	AllowedCallers      []string `json:"allowed_callers"`
-	Enabled             *bool    `json:"enabled"`
-	ExpectedRevision    int64    `json:"expected_revision"`
+	RouteKey                string   `json:"route_key"`
+	DisplayName             string   `json:"display_name"`
+	BotAccountID            int64    `json:"bot_account_id"`
+	DestinationID           int64    `json:"destination_id"`
+	InboundEnabled          bool     `json:"inbound_enabled"`
+	InboundBackendURL       string   `json:"inbound_backend_url"`
+	InboundBackendHealthURL string   `json:"inbound_backend_health_url"`
+	InboundBackendToken     string   `json:"inbound_backend_token"`
+	OutboundEnabled         bool     `json:"outbound_enabled"`
+	AllowedCallers          []string `json:"allowed_callers"`
+	Enabled                 *bool    `json:"enabled"`
+	ExpectedRevision        int64    `json:"expected_revision"`
 }
 
 func normalizeRouteInput(input businessRouteInput, creating bool) (models.BusinessRoute, error) {
@@ -374,6 +375,12 @@ func normalizeRouteInput(input businessRouteInput, creating bool) (models.Busine
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			return models.BusinessRoute{}, errors.New("a valid inbound_backend_url is required when inbound is enabled")
 		}
+		if input.InboundBackendHealthURL != "" {
+			healthURL, healthErr := url.ParseRequestURI(input.InboundBackendHealthURL)
+			if healthErr != nil || (healthURL.Scheme != "http" && healthURL.Scheme != "https") || healthURL.Host == "" || healthURL.User != nil {
+				return models.BusinessRoute{}, errors.New("inbound_backend_health_url must be a valid dedicated HTTP endpoint")
+			}
+		}
 	}
 	enabled := false
 	if input.Enabled != nil {
@@ -383,8 +390,9 @@ func normalizeRouteInput(input businessRouteInput, creating bool) (models.Busine
 	}
 	return models.BusinessRoute{RouteKey: input.RouteKey, DisplayName: input.DisplayName, BotAccountID: input.BotAccountID,
 		DestinationID: input.DestinationID, InboundEnabled: input.InboundEnabled, InboundBackendURL: strings.TrimSpace(input.InboundBackendURL),
-		InboundBackendToken: strings.TrimSpace(input.InboundBackendToken),
-		OutboundEnabled:     input.OutboundEnabled, AllowedCallers: input.AllowedCallers, Enabled: enabled}, nil
+		InboundBackendHealthURL: strings.TrimSpace(input.InboundBackendHealthURL),
+		InboundBackendToken:     strings.TrimSpace(input.InboundBackendToken),
+		OutboundEnabled:         input.OutboundEnabled, AllowedCallers: input.AllowedCallers, Enabled: enabled}, nil
 }
 
 func (s *Server) validateRoute(route *models.BusinessRoute) error {

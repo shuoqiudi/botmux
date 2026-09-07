@@ -426,6 +426,10 @@ func (s *Store) migrate() error {
 			hash, time.Now().Format(time.RFC3339))
 	}
 
+	if err := s.migrateBusinessRoutes(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

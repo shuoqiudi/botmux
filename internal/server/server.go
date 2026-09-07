@@ -329,6 +329,25 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/routes/update", s.adminOnly(s.handleUpdateRoute))
 	mux.HandleFunc("/api/routes/delete", s.adminOnly(s.handleDeleteRoute))
 
+	// Stable business-facing Telegram routes. These are intentionally separate
+	// from BotMux's Telegram-to-Telegram routing rules above.
+	mux.HandleFunc("/api/bot-accounts", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/bot-accounts/", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/telegram-destinations", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/telegram-destinations/", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/business-routes/setup", s.adminOnly(s.handleBusinessRouteSetup))
+	mux.HandleFunc("/api/business-routes", s.adminOnly(s.handleBusinessRoutes))
+	mux.HandleFunc("/api/business-routes/", s.adminOnly(s.handleBusinessRoutes))
+	// Versioned aliases are the preferred admin contract. The shorter paths are
+	// retained for the bundled SPA and compatibility with early deployments.
+	mux.HandleFunc("/api/gateway/v1/bot-accounts", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/gateway/v1/bot-accounts/", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/gateway/v1/destinations", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/gateway/v1/destinations/", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/gateway/v1/routes/setup", s.adminOnly(s.handleBusinessRouteSetup))
+	mux.HandleFunc("/api/gateway/v1/routes", s.adminOnly(s.handleBusinessRoutes))
+	mux.HandleFunc("/api/gateway/v1/routes/", s.adminOnly(s.handleBusinessRoutes))
+
 	// Bridges — admin only for management, no auth for incoming webhook
 	mux.HandleFunc("/api/bridges", s.adminOnly(s.handleBridgeList))
 	mux.HandleFunc("/api/bridges/add", s.adminOnly(s.handleBridgeAdd))
@@ -456,6 +475,10 @@ func (s *Server) handleBotList(w http.ResponseWriter, r *http.Request) {
 	}
 	var result []BotStatus
 	for _, b := range bots {
+		b.TokenSet = b.Token != ""
+		b.SecretTokenSet = b.SecretToken != ""
+		b.Token = ""
+		b.SecretToken = ""
 		bs := BotStatus{BotConfig: b, Running: s.proxy.IsRunning(b.ID)}
 		if mb := s.proxy.GetManagedBot(b.ID); mb != nil {
 			bs.BotTelegramID = mb.GetSelfID()
@@ -568,6 +591,12 @@ func (s *Server) handleBotUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Source = existing.Source
+	if req.Token == "" {
+		req.Token = existing.Token
+	}
+	if req.SecretToken == "" {
+		req.SecretToken = existing.SecretToken
+	}
 
 	// Re-validate token and update bot_username if token changed
 	if req.Token != existing.Token || req.BotUsername == "" {
@@ -654,7 +683,18 @@ func (s *Server) handleToggleDisabled(w http.ResponseWriter, r *http.Request) {
 // @Router /api/bots/validate [get]
 // @Security CookieAuth || BearerAuth
 func (s *Server) handleBotValidate(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeBusinessError(w, 400, "invalid_request", errors.New("invalid JSON body"))
+		return
+	}
+	token := req.Token
 	username, err := s.proxy.ValidateToken(token)
 	if err != nil {
 		writeError(w, err)

@@ -8,11 +8,13 @@ type BotConfig struct {
 	ID               int64  `json:"id"`
 	Name             string `json:"name"`
 	Token            string `json:"token"`
+	TokenSet         bool   `json:"token_set,omitempty"`
 	BotUsername      string `json:"bot_username"`
 	ManageEnabled    bool   `json:"manage_enabled"`
 	ProxyEnabled     bool   `json:"proxy_enabled"`
 	BackendURL       string `json:"backend_url"`
 	SecretToken      string `json:"secret_token"`
+	SecretTokenSet   bool   `json:"secret_token_set,omitempty"`
 	PollingTimeout   int    `json:"polling_timeout"`
 	Offset           int64  `json:"offset"`
 	LastError        string `json:"last_error,omitempty"`

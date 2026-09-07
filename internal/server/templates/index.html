@@ -1420,6 +1420,7 @@ body::before { display: none; }
   <div class="section-label">
     BOTS
     <div style="display:flex;gap:4px">
+      <button class="btn btn-sm" onclick="showBusinessRoutes()" style="padding:2px 8px;font-size:9px;color:var(--green);border-color:var(--green)" id="businessRoutesBtn">ROUTES</button>
       <button class="btn btn-sm" onclick="showLLMModal()" style="padding:2px 8px;font-size:9px;color:var(--cyan);border-color:var(--cyan-dim)" id="llmSettingsBtn">LLM</button>
       <button class="btn btn-sm btn-primary" onclick="showBotModal()" style="padding:2px 8px;font-size:9px">+ ADD</button>
     </div>
@@ -2562,6 +2563,7 @@ function updateModalLabels() {
   // info panel
   const infoPanelTitle = document.querySelector('#tab-info .panel-title');
   if (infoPanelTitle) infoPanelTitle.textContent = t('channel_data');
+  applyBusinessRouteLang();
 }
 
 function updateTagsPanelLabels() {
@@ -2788,8 +2790,7 @@ function showBotDetail() {
     rows.push([t('api_proxy_url'), `<span style="font-family:var(--ff-mono);font-size:11px;word-break:break-all;cursor:pointer;border-bottom:1px dashed var(--cyan-dim)" onclick="navigator.clipboard.writeText('${apiProxyURL}');this.style.color='var(--green)';setTimeout(()=>this.style.color='',1000)" title="Click to copy">${esc(apiProxyURL)}</span><br><span style="color:var(--text3);font-size:10px">${t('api_proxy_hint')}</span>`]);
   }
   if (b.long_poll_enabled) {
-    const pollURL = `${location.origin}/tgapi/bot${b.token}/getUpdates`;
-    rows.push([t('long_poll_url'), `<span style="font-family:var(--ff-mono);font-size:11px;word-break:break-all;cursor:pointer;border-bottom:1px dashed var(--cyan-dim)" onclick="navigator.clipboard.writeText('${pollURL}');this.style.color='var(--green)';setTimeout(()=>this.style.color='',1000)" title="Click to copy">${esc(pollURL)}</span><br><span style="color:var(--text3);font-size:10px">${t('long_poll_hint')}</span>`]);
+    rows.push([t('long_poll_url'), `<span style="font-family:var(--ff-mono);font-size:11px;color:var(--text3)">${t('credential_write_only')}</span>`]);
   }
   rows.push([t('offset'), b.offset]);
   rows.push([t('polling_timeout'), b.polling_timeout + 's']);
@@ -3926,12 +3927,12 @@ function showBotModal(bot = null) {
   document.getElementById('botModalTitle').textContent = bot ? t('edit_bot') : t('add_bot');
   document.getElementById('botEditID').value = bot ? bot.id : '';
   document.getElementById('botFormName').value = bot ? bot.name : '';
-  document.getElementById('botFormToken').value = bot ? bot.token : '';
+  document.getElementById('botFormToken').value = '';
   document.getElementById('botFormManage').checked = bot ? bot.manage_enabled : true;
   document.getElementById('botFormProxy').checked = bot ? bot.proxy_enabled : false;
   document.getElementById('botFormLongPoll').checked = bot ? bot.long_poll_enabled : false;
   document.getElementById('botFormBackendURL').value = bot ? bot.backend_url : '';
-  document.getElementById('botFormSecretToken').value = bot ? bot.secret_token : '';
+  document.getElementById('botFormSecretToken').value = '';
   document.getElementById('botFormTimeout').value = bot ? bot.polling_timeout : 30;
   document.getElementById('botTokenStatus').textContent = bot?.bot_username ? '@' + bot.bot_username : '';
   document.getElementById('botTokenStatus').style.color = bot?.bot_username ? 'var(--green)' : 'var(--text3)';
@@ -3965,7 +3966,7 @@ async function validateBotToken() {
   const status = document.getElementById('botTokenStatus');
   status.textContent = t('checking'); status.style.color = 'var(--text3)';
   try {
-    const res = await api(`/api/bots/validate?token=${encodeURIComponent(token)}`);
+    const res = await api('/api/bots/validate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token}) });
     status.textContent = `@${res.username}`; status.style.color = 'var(--green)';
     botTokenUsername = res.username;
   } catch(e) {
@@ -3987,7 +3988,7 @@ async function saveBot() {
     secret_token: document.getElementById('botFormSecretToken').value.trim(),
     polling_timeout: parseInt(document.getElementById('botFormTimeout').value) || 30,
   };
-  if (!data.name || !data.token) { toast(t('name_token_required'), 'error'); return; }
+  if (!data.name || (!editID && !data.token)) { toast(t('name_token_required'), 'error'); return; }
   if (!data.manage_enabled && !data.proxy_enabled) { toast(t('bot_mode_hint_none'), 'error'); return; }
   if (data.proxy_enabled && !data.backend_url) { toast(t('backend_url_required'), 'error'); return; }
   try {
@@ -4375,8 +4376,206 @@ function closeUserProfile() {
   </div>
 </div>
 
+<!-- Business Routes are separate from per-bot Telegram routing rules. -->
+<div id="businessRoutesModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeBusinessRoutes()">
+  <div class="modal" style="max-width:900px;max-height:90vh;overflow:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px">
+      <div>
+        <h3 id="businessRoutesTitle" style="margin:0">Business Routes</h3>
+        <div id="businessRoutesSubtitle" style="color:var(--text3);font-size:11px;margin-top:4px">Stable business paths to Telegram</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" id="businessRouteAddBtn" onclick="showBusinessRouteSetup()">+ CREATE</button>
+        <button class="btn btn-sm" onclick="closeBusinessRoutes()">CLOSE</button>
+      </div>
+    </div>
+    <div id="businessRoutesList"></div>
+  </div>
+</div>
+
+<div id="businessRouteSetupModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeBusinessRouteSetup()">
+  <div class="modal" style="max-width:720px;max-height:90vh;overflow:auto">
+    <h3 id="businessRouteSetupTitle">Create Business Route</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
+      <div class="panel">
+        <div class="panel-title" id="businessBotAccountTitle">Bot Account</div>
+        <div class="modal-field"><label id="businessBotNameLabel">Display name</label><input id="businessBotName" autocomplete="off"></div>
+        <div class="modal-field"><label id="businessBotTokenLabel">Bot token (write-only)</label><input id="businessBotToken" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title" id="businessDestinationTitle">Telegram Destination</div>
+        <div class="modal-field"><label id="businessDestinationNameLabel">Display name</label><input id="businessDestinationName" autocomplete="off"></div>
+        <div class="modal-field"><label id="businessDestinationChatLabel">Chat ID</label><input id="businessDestinationChat" type="number"></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-title">Business Route</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+        <div class="modal-field"><label>route_key</label><input id="businessRouteKey" placeholder="it_manage" pattern="[a-z0-9_-]+"></div>
+        <div class="modal-field"><label id="businessRouteNameLabel">Display name</label><input id="businessRouteName"></div>
+        <div class="modal-field"><label id="businessRouteBackendLabel">Inbound backend URL</label><input id="businessRouteBackend" type="url" placeholder="http://service/telegram"></div>
+        <div class="modal-field"><label id="businessRouteCallersLabel">Allowed callers</label><input id="businessRouteCallers" placeholder="it_manage, it_monitor"></div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:18px;margin-top:8px">
+        <label><input id="businessRouteInbound" type="checkbox"> <span id="businessRouteInboundLabel">Inbound</span></label>
+        <label><input id="businessRouteOutbound" type="checkbox" checked> <span id="businessRouteOutboundLabel">Outbound</span></label>
+        <label><input id="businessRouteEnabled" type="checkbox" checked> <span id="businessRouteEnabledLabel">Active</span></label>
+      </div>
+    </div>
+    <div id="businessRouteSetupResult" style="min-height:18px;margin-top:10px;font-size:11px"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeBusinessRouteSetup()" id="businessRouteCancelBtn">CANCEL</button>
+      <button class="btn btn-primary" onclick="createBusinessRouteSetup()" id="businessRouteSaveBtn">VALIDATE & CREATE</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let logsEventSource = null;
+
+let businessRoutesCache = [];
+
+function applyBusinessRouteLang() {
+  const values = {
+    businessRoutesBtn: 'business_routes', businessRoutesTitle: 'business_routes',
+    businessRoutesSubtitle: 'business_routes_subtitle', businessRouteAddBtn: 'business_route_create',
+    businessRouteSetupTitle: 'business_route_create_title', businessBotAccountTitle: 'bot_account',
+    businessDestinationTitle: 'telegram_destination', businessBotNameLabel: 'display_name',
+    businessDestinationNameLabel: 'display_name', businessBotTokenLabel: 'bot_token_write_only',
+    businessDestinationChatLabel: 'chat_id', businessRouteNameLabel: 'display_name',
+    businessRouteBackendLabel: 'inbound_backend', businessRouteCallersLabel: 'allowed_callers',
+    businessRouteInboundLabel: 'inbound', businessRouteOutboundLabel: 'outbound',
+    businessRouteEnabledLabel: 'active', businessRouteCancelBtn: 'cancel', businessRouteSaveBtn: 'validate_create'
+  };
+  for (const [id, key] of Object.entries(values)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = t(key);
+  }
+}
+
+async function showBusinessRoutes() {
+  document.getElementById('businessRoutesModal').style.display = 'flex';
+  applyBusinessRouteLang();
+  await loadBusinessRoutes();
+}
+
+function closeBusinessRoutes() { document.getElementById('businessRoutesModal').style.display = 'none'; }
+
+async function loadBusinessRoutes() {
+  const el = document.getElementById('businessRoutesList');
+  try {
+    businessRoutesCache = await api('/api/gateway/v1/routes');
+    if (!businessRoutesCache.length) {
+      el.innerHTML = `<div class="route-empty"><div>${t('business_routes_empty')}</div><div class="route-empty-hint">${t('business_routes_empty_hint')}</div></div>`;
+      return;
+    }
+    el.innerHTML = businessRoutesCache.map(route => `
+      <div class="route-item ${route.enabled ? '' : 'route-disabled'}" style="margin-bottom:8px">
+        <div class="route-indicator ${route.status === 'active' ? 'route-indicator-active' : 'route-indicator-inactive'}"></div>
+        <div class="route-body">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:7px">
+            <strong>${esc(route.display_name)}</strong>
+            <code style="color:var(--cyan)">${esc(route.route_key)}</code>
+            <span class="route-toggle-status ${route.status === 'active' ? 'route-toggle-on' : 'route-toggle-off'}">${esc(route.status)}</span>
+            <span class="badge">${t('revision')} ${route.revision}</span>
+          </div>
+          <div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:6px">${esc(route.path)}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
+            <span class="badge">@${esc(route.bot_username)} · ${esc(route.bot_account_name)}</span>
+            <span class="badge">${esc(route.destination_name)}</span>
+            <span class="badge ${route.inbound_enabled ? 'badge-admin' : ''}">${t('inbound')}: ${route.inbound_enabled ? t('enabled') : t('disabled')}</span>
+            <span class="badge ${route.outbound_enabled ? 'badge-proxy' : ''}">${t('outbound')}: ${route.outbound_enabled ? t('enabled') : t('disabled')}</span>
+          </div>
+        </div>
+        <div class="route-actions">
+          <button class="btn btn-sm" onclick="editBusinessRoute('${route.route_key}')">${t('edit')}</button>
+          <button class="btn btn-primary btn-sm" onclick="testBusinessRoute('${route.route_key}')">${t('test_message')}</button>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    el.textContent = e.message;
+  }
+}
+
+function showBusinessRouteSetup() {
+  document.getElementById('businessRouteSetupModal').style.display = 'flex';
+  document.getElementById('businessRouteSetupResult').textContent = '';
+  for (const id of ['businessBotName','businessBotToken','businessDestinationName','businessDestinationChat','businessRouteKey','businessRouteName','businessRouteBackend','businessRouteCallers']) {
+    document.getElementById(id).value = '';
+  }
+  document.getElementById('businessRouteInbound').checked = false;
+  document.getElementById('businessRouteOutbound').checked = true;
+  document.getElementById('businessRouteEnabled').checked = true;
+  applyBusinessRouteLang();
+}
+
+function closeBusinessRouteSetup() {
+  document.getElementById('businessRouteSetupModal').style.display = 'none';
+  document.getElementById('businessBotToken').value = '';
+}
+
+async function createBusinessRouteSetup() {
+  const result = document.getElementById('businessRouteSetupResult');
+  const inbound = document.getElementById('businessRouteInbound').checked;
+  const payload = {
+    bot_account: {name: document.getElementById('businessBotName').value.trim(), token: document.getElementById('businessBotToken').value.trim()},
+    destination: {name: document.getElementById('businessDestinationName').value.trim(), chat_id: Number(document.getElementById('businessDestinationChat').value)},
+    route: {
+      route_key: document.getElementById('businessRouteKey').value.trim(), display_name: document.getElementById('businessRouteName').value.trim(),
+      inbound_enabled: inbound, inbound_backend_url: document.getElementById('businessRouteBackend').value.trim(),
+      outbound_enabled: document.getElementById('businessRouteOutbound').checked,
+      allowed_callers: document.getElementById('businessRouteCallers').value.split(',').map(v => v.trim()).filter(Boolean),
+      enabled: document.getElementById('businessRouteEnabled').checked
+    }
+  };
+  result.textContent = t('validating'); result.style.color = 'var(--text3)';
+  try {
+    await api('/api/gateway/v1/routes/setup', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    document.getElementById('businessBotToken').value = '';
+    result.textContent = t('business_route_created'); result.style.color = 'var(--green)';
+    closeBusinessRouteSetup();
+    await loadBusinessRoutes();
+  } catch(e) {
+    document.getElementById('businessBotToken').value = '';
+    result.textContent = e.message; result.style.color = 'var(--magenta)';
+  }
+}
+
+async function editBusinessRoute(key) {
+  const route = businessRoutesCache.find(item => item.route_key === key);
+  if (!route) return;
+  const [accounts, destinations] = await Promise.all([api('/api/gateway/v1/bot-accounts'), api('/api/gateway/v1/destinations')]);
+  const account = accounts.find(item => item.id === route.bot_account_id);
+  const destination = destinations.find(item => item.id === route.destination_id);
+  const routeName = prompt(t('business_route_name_prompt'), route.display_name);
+  if (routeName === null) return;
+  const accountName = prompt(t('bot_account_name_prompt'), account.name);
+  if (accountName === null) return;
+  const destinationName = prompt(t('destination_name_prompt'), destination.name);
+  if (destinationName === null) return;
+  const chatValue = prompt(t('destination_chat_prompt'), String(destination.chat_id));
+  if (chatValue === null) return;
+  try {
+    await api(`/api/gateway/v1/bot-accounts/${account.id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:accountName})});
+    await api(`/api/gateway/v1/destinations/${destination.id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:destinationName, bot_account_id:account.id, chat_id:Number(chatValue)})});
+    await api(`/api/gateway/v1/routes/${route.route_key}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+      route_key:route.route_key, display_name:routeName, bot_account_id:account.id, destination_id:destination.id,
+      inbound_enabled:route.inbound_enabled, inbound_backend_url:route.inbound_backend_url || '', outbound_enabled:route.outbound_enabled,
+      allowed_callers:route.allowed_callers, enabled:route.enabled
+    })});
+    toast(t('business_route_updated'));
+    await loadBusinessRoutes();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function testBusinessRoute(key) {
+  const text = prompt(t('test_message_prompt'), t('test_message_default'));
+  if (!text) return;
+  try {
+    const response = await api(`/api/gateway/v1/routes/${key}/test`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text})});
+    toast(`${t('test_message_sent')} #${response.message_id}`);
+  } catch(e) { toast(`${t('test_message_failed')}: ${e.message}`, 'error'); }
+}
 
 function showLogsPanel() {
   document.getElementById('logsModal').style.display = 'flex';

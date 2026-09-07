@@ -753,18 +753,24 @@ paths:
           description: Method not allowed (must be POST)
 
   /api/bots/validate:
-    get:
+    post:
       tags: [Bots]
       summary: Validate a bot token
       description: Calls `getMe` on Telegram to verify the token is valid and returns bot info.
       operationId: validateBotToken
-      parameters:
-        - name: token
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Telegram bot token to validate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  writeOnly: true
+            example:
+              token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
       responses:
         '200':
           description: Token is valid

@@ -443,6 +443,14 @@ func (s *Server) handleI18n(w http.ResponseWriter, r *http.Request) {
 
 // Bot management handlers
 
+func redactBotConfig(bot models.BotConfig) models.BotConfig {
+	bot.TokenSet = bot.Token != ""
+	bot.SecretTokenSet = bot.SecretToken != ""
+	bot.Token = ""
+	bot.SecretToken = ""
+	return bot
+}
+
 // handleBotList returns the list of bots accessible to the current user.
 // @Summary List bots
 // @Description Returns all bots for admin users, or only assigned bots for regular users. Each entry includes a running status flag.
@@ -475,10 +483,7 @@ func (s *Server) handleBotList(w http.ResponseWriter, r *http.Request) {
 	}
 	var result []BotStatus
 	for _, b := range bots {
-		b.TokenSet = b.Token != ""
-		b.SecretTokenSet = b.SecretToken != ""
-		b.Token = ""
-		b.SecretToken = ""
+		b = redactBotConfig(b)
 		bs := BotStatus{BotConfig: b, Running: s.proxy.IsRunning(b.ID)}
 		if mb := s.proxy.GetManagedBot(b.ID); mb != nil {
 			bs.BotTelegramID = mb.GetSelfID()
@@ -669,7 +674,7 @@ func (s *Server) handleToggleDisabled(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bot.Disabled = newDisabled
-	writeJSON(w, bot)
+	writeJSON(w, redactBotConfig(*bot))
 }
 
 // handleBotValidate validates a Telegram bot token and returns the bot username.
@@ -677,10 +682,11 @@ func (s *Server) handleToggleDisabled(w http.ResponseWriter, r *http.Request) {
 // @Description Calls Telegram API to verify the token and returns the associated bot username. Admin only.
 // @Tags bots
 // @Produce json
-// @Param token query string true "Telegram bot token"
+// @Accept json
+// @Param request body object{token=string} true "Telegram bot token"
 // @Success 200 {object} map[string]string
 // @Failure 500 {object} map[string]string
-// @Router /api/bots/validate [get]
+// @Router /api/bots/validate [post]
 // @Security CookieAuth || BearerAuth
 func (s *Server) handleBotValidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

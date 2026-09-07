@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -153,12 +154,17 @@ func TestE2E_GatewayManagement(t *testing.T) {
 	}
 
 	// The legacy bot list is also redacted after write.
-	_, err = h.store.AddBotConfig(models.BotConfig{Name: "legacy", Token: token, SecretToken: "backend-secret"})
+	legacyBotID, err := h.store.AddBotConfig(models.BotConfig{Name: "legacy", Token: token, SecretToken: "backend-secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	status, body = call(http.MethodGet, "/api/bots", nil)
 	if status != 200 || strings.Contains(string(body), "backend-secret") || strings.Contains(string(body), token) {
 		t.Fatal("legacy bot response exposed a credential")
+	}
+	status, body = call(http.MethodPost, "/api/bots/toggle-disabled?id="+strconv.FormatInt(legacyBotID, 10), nil)
+	if status != 200 || strings.Contains(string(body), "backend-secret") ||
+		!bytes.Contains(body, []byte(`"token_set":true`)) || !bytes.Contains(body, []byte(`"secret_token_set":true`)) {
+		t.Fatalf("legacy bot mutation response exposed or omitted credential state: %s", body)
 	}
 }

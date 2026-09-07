@@ -598,7 +598,7 @@ All endpoints return JSON. Errors return `{"error": "message"}` with HTTP 500. M
 | POST | `/api/bots/add` | Add a new bot (JSON body) |
 | POST | `/api/bots/update` | Update bot config (JSON body) |
 | POST | `/api/bots/delete?id=` | Delete a bot |
-| GET | `/api/bots/validate?token=` | Validate a bot token |
+| POST | `/api/bots/validate` | Validate a bot token (JSON body) |
 | GET | `/api/bots/health?id=` | Check backend health |
 
 ### Chats

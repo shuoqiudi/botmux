@@ -83,7 +83,7 @@ func main() {
 	if *demoMode {
 		telegramAPIURL = "https://telegram-bot-api.exe.xyz"
 		log.Printf("Demo mode enabled. Telegram API: %s", telegramAPIURL)
-		log.Printf("Login with demo:demo")
+		log.Printf("Demo credentials are enabled")
 		*dbPath = "demo.db"
 	}
 

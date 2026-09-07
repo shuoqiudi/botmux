@@ -151,8 +151,7 @@ func (bm *Manager) HandleIncoming(bridgeID int64, msg models.BridgeIncomingMessa
 	bm.ensureManagedBot(cfg.LinkedBotID)
 
 	// Inject into the processing pipeline
-	log.Printf("[bridge] id=%d injecting update for bot %d: chat=%d from=%q text=%q",
-		bridgeID, cfg.LinkedBotID, tgChatID, msg.Username, truncate(msg.Text, 80))
+	log.Printf("[bridge] id=%d injecting update for bot %d", bridgeID, cfg.LinkedBotID)
 
 	bm.proxy.ProcessUpdate(cfg.LinkedBotID, update)
 

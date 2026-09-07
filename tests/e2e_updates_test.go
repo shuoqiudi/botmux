@@ -64,7 +64,7 @@ func TestE2E_Updates_PushProxyDeliversWithoutSensitiveLogs(t *testing.T) {
 	select {
 	case got := <-backendReceived:
 		if got["update_id"] != float64(42) {
-			t.Fatalf("unexpected pushed update: %v", got)
+			t.Fatal("backend received an unexpected update_id")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("backend did not receive pushed update")

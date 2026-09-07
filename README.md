@@ -352,11 +352,23 @@ export TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
 ./botmux
 ```
 
+### With a token file
+
+```bash
+./botmux -token-file /run/secrets/telegram_bot_token
+```
+
+The file must contain exactly one non-empty line. `-token-file` and `-token`
+cannot be used together. A token file takes precedence over
+`TELEGRAM_BOT_TOKEN`, which lets container runtimes mount the credential without
+copying it into the process environment.
+
 ### Command-line flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-token` | `""` | Telegram bot token (or use `TELEGRAM_BOT_TOKEN` env var) |
+| `-token-file` | `""` | Read the Telegram bot token from a single-line file |
 | `-addr` | `:8080` | HTTP server listen address |
 | `-db` | `botdata.db` | Path to SQLite database file |
 | `-webhook` | `""` | Set webhook URL for receiving updates (instead of polling) |

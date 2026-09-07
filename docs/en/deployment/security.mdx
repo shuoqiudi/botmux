@@ -18,8 +18,9 @@ description: "Security considerations for production deployment"
 
 ## API Security
 
-- All API endpoints (except health, SPA, and `/tgapi/`) require authentication
-- `/tgapi/` uses the bot token as authorization (same as Telegram API)
+- All API endpoints except health and the SPA require authentication by default
+- `/tgapi/` requires an admin credential; only isolated legacy networks should
+  be allowlisted with `-tgapi-trusted-cidrs` (forwarded headers are ignored)
 - Session cookies: HttpOnly, SameSite=Strict, 30-day expiry
 - API keys: Bearer token in Authorization header
 

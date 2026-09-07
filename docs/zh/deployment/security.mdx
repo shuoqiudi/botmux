@@ -18,8 +18,9 @@ description: "生产部署的安全注意事项"
 
 ## API 安全
 
-- 所有 API 端点（除健康检查、SPA 和 `/tgapi/`）都需要认证
-- `/tgapi/` 使用机器人令牌作为授权（与 Telegram API 相同）
+- 除健康检查和 SPA 外，所有 API 端点默认都需要认证
+- `/tgapi/` 需要管理员凭据；仅应通过 `-tgapi-trusted-cidrs`
+  放行隔离的旧网络（转发请求头会被忽略）
 - 会话 Cookie：HttpOnly、SameSite=Strict、30 天过期
 - API 密钥：Authorization 头中的 Bearer 令牌
 

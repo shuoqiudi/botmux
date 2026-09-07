@@ -33,7 +33,9 @@ WebP files (stickers) are automatically converted to PNG. Content types are dete
 
 ## Authentication
 
-No additional auth required — the bot token in the URL is the authorization (same as Telegram API).
+An administrator session or API key is required by default. A legacy backend
+may omit that credential only when its direct peer address is in
+`-tgapi-trusted-cidrs`; forwarded headers are ignored.
 
 ## Message capture
 
@@ -45,7 +47,7 @@ Several Telegram Bot API methods are intercepted and handled by BotMux instead o
 
 | Method | Behavior |
 |--------|----------|
-| `setWebhook` | Configures the bot's backend URL in BotMux and enables proxy mode. Auto-registers unknown bots via `getMe`. Supports `url` and `drop_pending_updates` parameters. |
+| `setWebhook` | Configures the bot's backend URL in BotMux and enables proxy mode. Auto-registration of unknown bots via `getMe` requires `BOTMUX_ALLOW_AUTO_REGISTER=1`. Supports `url` and `drop_pending_updates` parameters. |
 | `deleteWebhook` | Clears the backend URL and disables proxy mode. Supports `drop_pending_updates`. |
 | `getWebhookInfo` | Returns BotMux's internal webhook state (`url`, `pending_update_count`, `has_custom_certificate`, `max_connections`, `ip_address`). |
 | `getUpdates` | When long polling is enabled, served from BotMux's internal queue instead of forwarding to Telegram. When the bot is managed but long polling is not enabled, returns an empty result to prevent conflict errors. |

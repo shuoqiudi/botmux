@@ -537,7 +537,9 @@ Backend ──sendMessage──> /tgapi/ (proxy) ──> Telegram API
 ```
 
 **Notes:**
-- No additional authentication required — the bot token in the URL is the authorization (same as Telegram API)
+- `/tgapi/` requires an admin session or admin API key by default. Legacy backends
+  that cannot send one must connect from an isolated network listed in
+  `-tgapi-trusted-cidrs`; the bot token in the URL is not sufficient.
 - Multiple backends can poll the same bot simultaneously
 - Push proxy and long polling can be active at the same time for the same bot
 - If your backend also sends messages, point those at `/tgapi/` too — see [Capturing Bot Replies](#capturing-bot-replies-api-proxy)
@@ -730,6 +732,10 @@ All endpoints return JSON. Errors return `{"error": "message"}` with HTTP 500. M
 | GET | `/api/updates/poll?bot_id=&offset=&limit=&timeout=` | Poll for updates (auth required) |
 
 ### Telegram API Proxy
+
+These token-bearing endpoints require an admin session/API key unless the
+direct peer address matches `-tgapi-trusted-cidrs`. Forwarded headers are not
+used for this decision.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|

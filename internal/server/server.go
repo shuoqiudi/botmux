@@ -2995,16 +2995,9 @@ func (s *Server) handleTelegramAPIProxy(w http.ResponseWriter, r *http.Request) 
 		method = InferTelegramMethod(reqBody)
 	}
 
-	// Log incoming request
-	maskedToken := botToken
-	if len(maskedToken) > 8 {
-		maskedToken = maskedToken[:4] + "..." + maskedToken[len(maskedToken)-4:]
-	}
-	bodyPreview := string(reqBody)
-	if len(bodyPreview) > 512 {
-		bodyPreview = bodyPreview[:512] + "..."
-	}
-	log.Printf("[tgapi-proxy] %s %s bot=%s path=%s body=%s", r.Method, method, maskedToken, r.URL.Path, bodyPreview)
+	// The request path contains the bot token and the body may contain chat IDs
+	// or message text. Keep only operation metadata in logs.
+	log.Printf("[tgapi-proxy] %s %s body_bytes=%d", r.Method, method, len(reqBody))
 
 	// Forward to Telegram
 	tgURL := fmt.Sprintf("%s/bot%s/%s", s.tgAPIURL(), botToken, method)
@@ -3649,9 +3642,9 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 		VideoNote *struct {
 			FileID string `json:"file_id"`
 		} `json:"video_note"`
-		LivePhoto   map[string]any  `json:"live_photo"`
-		RichMessage map[string]any  `json:"rich_message"`
-		SenderTag   string          `json:"sender_tag"`
+		LivePhoto   map[string]any `json:"live_photo"`
+		RichMessage map[string]any `json:"rich_message"`
+		SenderTag   string         `json:"sender_tag"`
 	}
 	if err := json.Unmarshal(resp.Result, &msg); err != nil || msg.MessageID == 0 {
 		return
@@ -3717,8 +3710,7 @@ func (s *Server) CaptureSentMessage(token, method string, reqBody []byte, conten
 	if err := s.store.SaveMessage(m); err != nil {
 		log.Printf("[tgapi-proxy] Failed to save sent message: %v", err)
 	} else {
-		log.Printf("[tgapi-proxy] Captured %s: msg_id=%d chat_id=%d from=%s text=%q",
-			method, msg.MessageID, msg.Chat.ID, fromUser, truncateStr(text, 80))
+		log.Printf("[tgapi-proxy] Captured %s: msg_id=%d", method, msg.MessageID)
 	}
 
 	// Also track the chat if we have a bot for this token
@@ -3784,8 +3776,8 @@ func (s *Server) CaptureCopiedMessage(token string, reqBody []byte, contentType 
 		return
 	}
 
-	log.Printf("[tgapi-proxy] Captured copyMessage: msg_id=%d chat_id=%d source_chat_id=%d source_msg_id=%d text=%q",
-		resp.Result.MessageID, params.ChatID, params.FromChatID, params.MessageID, truncateStr(text, 80))
+	log.Printf("[tgapi-proxy] Captured copyMessage: msg_id=%d source_msg_id=%d",
+		resp.Result.MessageID, params.MessageID)
 }
 
 func (s *Server) findBotByToken(token string) *models.BotConfig {

@@ -169,6 +169,15 @@ func (e *rateLimitError) Error() string {
 	return fmt.Sprintf("rate limited, retry after %s: %s", e.After, e.Description)
 }
 
+type telegramAPIError struct {
+	Code        int
+	Description string
+}
+
+func (e *telegramAPIError) Error() string {
+	return fmt.Sprintf("API error %d: %s", e.Code, e.Description)
+}
+
 // Manager manages polling and forwarding for all bots
 type Manager struct {
 	store             *store.Store
@@ -427,10 +436,11 @@ func (pm *Manager) startBot(botID int64) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	pm.runners[botID] = &proxyRunner{cancel: cancel, botID: botID}
+	runner := &proxyRunner{cancel: cancel, botID: botID}
+	pm.runners[botID] = runner
 	log.Printf("[proxy] startBot: launched pollLoop for botID=%d", botID)
 
-	go pm.pollLoop(ctx, botID)
+	go pm.pollLoop(ctx, runner)
 }
 
 func (pm *Manager) StopBot(botID int64) {
@@ -533,7 +543,16 @@ func (pm *Manager) RestartBot(botID int64) error {
 	return nil
 }
 
-func (pm *Manager) pollLoop(ctx context.Context, botID int64) {
+func (pm *Manager) pollLoop(ctx context.Context, runner *proxyRunner) {
+	botID := runner.botID
+	defer func() {
+		pm.mu.Lock()
+		if pm.runners[botID] == runner {
+			delete(pm.runners, botID)
+		}
+		pm.mu.Unlock()
+	}()
+
 	retryDelay := pm.retryDelayInitial
 	maxRetryDelay := pm.retryDelayMax
 	lastHealthCheck := time.Time{}
@@ -586,6 +605,12 @@ func (pm *Manager) pollLoop(ctx context.Context, botID int64) {
 		updates, err := pm.getUpdates(ctx, b.Token, b.Offset, timeout)
 		if err != nil {
 			pm.store.UpdateBotStatus(botID, fmt.Sprintf("getUpdates error: %v", err), "")
+
+			var apiErr *telegramAPIError
+			if errors.As(err, &apiErr) && apiErr.Code == http.StatusConflict {
+				log.Printf("[proxy] pollLoop: botID=%d polling ownership conflict; stopping local poller", botID)
+				return
+			}
 
 			// Honor Telegram's retry_after on 429 (rate limit). Short exponential
 			// backoff would hammer the API and extend the flood ban.
@@ -1034,10 +1059,6 @@ func (pm *Manager) getUpdates(ctx context.Context, token string, offset int64, t
 		"allowed_updates": bot.AllowedUpdateTypes,
 	})
 
-	maskedToken := token
-	if len(token) > 8 {
-		maskedToken = token[:8] + "..."
-	}
 	url := fmt.Sprintf("%s/bot%s/getUpdates", pm.tgAPIBaseURL, token)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
@@ -1069,18 +1090,18 @@ func (pm *Manager) getUpdates(ctx context.Context, token string, offset int64, t
 	}
 
 	if !result.OK {
-		log.Printf("[getUpdates] ← Telegram: token=%s ok=false error=%d: %s", maskedToken, result.ErrorCode, result.Description)
+		log.Printf("[getUpdates] Telegram returned error=%d", result.ErrorCode)
 		if result.RetryAfter > 0 {
 			return nil, &rateLimitError{
 				After:       time.Duration(result.RetryAfter) * time.Second,
 				Description: result.Description,
 			}
 		}
-		return nil, fmt.Errorf("API error %d: %s", result.ErrorCode, result.Description)
+		return nil, &telegramAPIError{Code: result.ErrorCode, Description: result.Description}
 	}
 
 	if len(result.Result) > 0 {
-		log.Printf("[getUpdates] ← Telegram: token=%s updates=%d offset=%d", maskedToken, len(result.Result), offset)
+		log.Printf("[getUpdates] Telegram returned updates=%d offset=%d", len(result.Result), offset)
 	}
 
 	return result.Result, nil
@@ -1112,11 +1133,11 @@ func (pm *Manager) forwardUpdate(ctx context.Context, b *models.BotConfig, updat
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	log.Printf("[proxy] forwardUpdate: backend responded %d (%d bytes): %s",
-		resp.StatusCode, len(respBody), truncate(string(respBody), 500))
+	log.Printf("[proxy] forwardUpdate: backend responded %d (%d bytes)",
+		resp.StatusCode, len(respBody))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("backend returned %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return fmt.Errorf("backend returned %d", resp.StatusCode)
 	}
 
 	pm.handleWebhookReply(b.Token, respBody)
@@ -1131,7 +1152,7 @@ func (pm *Manager) handleWebhookReply(token string, body []byte) {
 
 	var reply map[string]any
 	if err := json.Unmarshal(body, &reply); err != nil {
-		log.Printf("[proxy] handleWebhookReply: response is not JSON: %s", truncate(string(body), 200))
+		log.Printf("[proxy] handleWebhookReply: response is not JSON (%d bytes)", len(body))
 		return
 	}
 
@@ -1306,23 +1327,10 @@ func summarizeUpdate(update map[string]any) string {
 	updateID, _ := update["update_id"].(float64)
 	summary := fmt.Sprintf("update_id=%d", int64(updateID))
 
-	// Message-like update types (contain text, from, chat fields)
+	// Message-like update types. Do not log message, user, or chat data.
 	for _, key := range messageLikeUpdateKeys {
-		if msg, ok := update[key].(map[string]any); ok {
+		if _, ok := update[key].(map[string]any); ok {
 			summary += " type=" + key
-			if text, ok := msg["text"].(string); ok {
-				summary += fmt.Sprintf(" text=%q", truncate(text, 80))
-			}
-			if from, ok := msg["from"].(map[string]any); ok {
-				if uname, ok := from["username"].(string); ok {
-					summary += fmt.Sprintf(" from=@%s", uname)
-				}
-			}
-			if chat, ok := msg["chat"].(map[string]any); ok {
-				if chatID, ok := chat["id"].(float64); ok {
-					summary += fmt.Sprintf(" chat_id=%d", int64(chatID))
-				}
-			}
 			return summary
 		}
 	}

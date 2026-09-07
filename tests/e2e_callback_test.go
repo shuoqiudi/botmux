@@ -1,9 +1,13 @@
 package tests
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,4 +157,36 @@ func TestE2E_Callback_C03_SendMessageWithInlineKeyboard(t *testing.T) {
 
 	// Confirm timing constraint: test must finish well within 1 second.
 	_ = time.Second
+}
+
+func TestE2E_Callback_C04_ProxyLogsRedactTokenAndChat(t *testing.T) {
+	h := setupE2E(t, withHTTPServer())
+
+	const token = "proxy-secret-token"
+	const chatID = int64(88123456789)
+	h.AddBot(models.BotConfig{
+		Token:       token,
+		Name:        "redaction_bot",
+		BotUsername: "redaction_bot",
+	})
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	status, _ := h.CallTgapi("sendMessage", token, map[string]any{
+		"chat_id": chatID,
+		"text":    "proxy-sensitive-message",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("sendMessage status: got %d, want 200", status)
+	}
+
+	logText := logs.String()
+	for _, secret := range []string{token, fmt.Sprint(chatID), "proxy-sensitive-message"} {
+		if strings.Contains(logText, secret) {
+			t.Fatal("Bot API proxy log exposed sensitive Telegram data")
+		}
+	}
 }

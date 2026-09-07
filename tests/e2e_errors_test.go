@@ -287,9 +287,8 @@ func TestE2E_Errors(t *testing.T) {
 
 	// -----------------------------------------------------------------
 	// E-08: getUpdates 409 Conflict
-	// Observed behaviour: pollLoop treats 409 the same as any other API
-	// error — logs it, retries with backoff. There is no special "stop on
-	// 409" logic. This test documents that behaviour.
+	// A 409 means another getUpdates owner exists. The local poller must stop
+	// instead of competing with it.
 	// -----------------------------------------------------------------
 	t.Run("E-08_getUpdates_409_conflict", func(t *testing.T) {
 		h := setupE2E(t, withFastBackoff())
@@ -315,9 +314,13 @@ func TestE2E_Errors(t *testing.T) {
 			t.Fatalf("RestartBot: %v", err)
 		}
 
-		// Observed behaviour: pollLoop does NOT stop on 409 — retries with backoff.
+		// Wait for the first conflict, then prove no retry was attempted.
 		h.Eventually(func() bool {
-			return h.fake.RequestsCountFor("getUpdates") >= 2
-		}, 100*time.Millisecond, "expected pollLoop to retry on 409 (does not stop)")
+			return h.fake.RequestsCountFor("getUpdates") == 1
+		}, 100*time.Millisecond, "expected the initial getUpdates conflict")
+		time.Sleep(30 * time.Millisecond)
+		if got := h.fake.RequestsCountFor("getUpdates"); got != 1 {
+			t.Fatalf("polling owner conflict retried: got %d requests, want 1", got)
+		}
 	})
 }

@@ -18,6 +18,7 @@ import (
 var errJenkinsUnavailable = errors.New("jenkins_unavailable")
 var errResultUnavailable = errors.New("result_unavailable")
 var jenkinsJobPath = regexp.MustCompile(`^(?:/[A-Za-z0-9_.-]+)*/job/[A-Za-z0-9_.-]+(?:/job/[A-Za-z0-9_.-]+)*$`)
+var jenkinsConsoleTimestamp = regexp.MustCompile(`^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\] `)
 
 type jenkinsClient struct {
 	jobURL   string
@@ -239,6 +240,9 @@ func (j *jenkinsClient) result(ctx context.Context, number int64, id string) (st
 	var foundStatus, foundCode string
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSuffix(line, "\r")
+		// Jenkins Timestamper decorates consoleText lines. Strip only its
+		// known prefix; arbitrary console text must not become a result frame.
+		line = jenkinsConsoleTimestamp.ReplaceAllString(line, "")
 		if !strings.HasPrefix(line, begin) || !strings.HasSuffix(line, end) {
 			continue
 		}

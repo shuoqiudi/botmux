@@ -9,3 +9,4 @@ botmux
 .omc
 docs/node_modules
 docs/package-lock.json
+/secrets/

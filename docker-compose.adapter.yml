@@ -1,0 +1,12 @@
+# Optional overlay: docker compose -f docker-compose.yml -f docker-compose.adapter.yml up -d --build
+services:
+  botmux:
+    build: .
+    image: botmux:local
+    command: ["-addr", ":8080", "-db", "/data/botdata.db", "-redis-addr", "redis:6379", "-adapter-config-file", "/run/secrets/adapter_config"]
+    secrets:
+      - adapter_config
+
+secrets:
+  adapter_config:
+    file: ./secrets/adapter.json

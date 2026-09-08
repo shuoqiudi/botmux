@@ -101,7 +101,7 @@ func (s *Store) findInboundDelivery(scanner interface{ Scan(...any) error }) (*m
 	var backendCiphertext string
 	err := scanner.Scan(&d.DeliveryID, &d.BotID, &d.BotAccountID, &d.RouteID, &d.RouteRevision,
 		&d.RouteKey, &d.UpdateID, &d.CallbackQueryID, &d.Status, &d.RawUpdate, &d.StreamID,
-		&d.AttemptCount, &d.NextAttemptAt, &d.LastErrorClass, &d.BackendURL,
+		&d.AttemptCount, &d.NextAttemptAt, &d.LastErrorClass, &d.InboundTarget, &d.BackendURL,
 		&backendCiphertext, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -114,7 +114,7 @@ const inboundDeliverySelect = `
 	SELECT d.delivery_id,d.bot_id,d.bot_account_id,d.route_id,d.route_revision,
 		d.route_key,d.update_id,d.callback_query_id,d.status,d.raw_update,d.stream_id,
 		d.attempt_count,d.next_attempt_at,d.last_error_class,
-		COALESCE(rr.inbound_backend_url,''),COALESCE(rr.inbound_backend_token_ciphertext,''),
+		COALESCE(rr.inbound_target,'backend'),COALESCE(rr.inbound_backend_url,''),COALESCE(rr.inbound_backend_token_ciphertext,''),
 		d.created_at,d.updated_at
 	FROM gateway_inbound_deliveries d
 	LEFT JOIN gateway_route_revisions rr ON rr.route_id=d.route_id AND rr.revision=d.route_revision`

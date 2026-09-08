@@ -48,11 +48,12 @@ type IngestResult struct {
 // Inbound is the durable Telegram Update ingestion and backend delivery
 // boundary. It deliberately knows nothing about native content-based routes.
 type Inbound struct {
-	store  InboundStore
-	queue  InboundQueue
-	client *http.Client
-	config InboundConfig
-	health workerHeartbeat
+	store   InboundStore
+	queue   InboundQueue
+	client  *http.Client
+	config  InboundConfig
+	health  workerHeartbeat
+	adapter *Adapter
 }
 
 type InboundConfig struct {
@@ -207,6 +208,8 @@ func (i *Inbound) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+func (i *Inbound) SetAdapter(adapter *Adapter) { i.adapter = adapter }
+
 func (i *Inbound) WorkerHealth() (bool, time.Time) { return i.health.snapshot() }
 
 func (i *Inbound) process(ctx context.Context, message StreamMessage) error {
@@ -233,6 +236,9 @@ func (i *Inbound) process(ctx context.Context, message StreamMessage) error {
 		}
 	}
 
+	if delivery.InboundTarget == "it_manage" {
+		return i.processAdapter(ctx, message, delivery)
+	}
 	attemptID := uuid.NewString()
 	attempt, err := i.store.BeginInboundAttempt(ctx, delivery.DeliveryID, attemptID)
 	if err != nil {
@@ -286,4 +292,36 @@ func (i *Inbound) deliver(ctx context.Context, delivery *models.InboundDelivery,
 
 func (i *Inbound) retryDelay(deliveryID string, attempt int) time.Duration {
 	return retryBackoff(deliveryID, attempt, i.config.BaseRetry, i.config.MaxRetry)
+}
+
+func (i *Inbound) processAdapter(ctx context.Context, message StreamMessage, d *models.InboundDelivery) error {
+	done, class := true, "adapter_not_configured"
+	if i.adapter != nil {
+		var err error
+		done, class, err = i.adapter.Process(ctx, d)
+		if err != nil {
+			return err
+		}
+	}
+	if !done {
+		return nil
+	}
+	attemptID := uuid.NewString()
+	attempt, err := i.store.BeginInboundAttempt(ctx, d.DeliveryID, attemptID)
+	if err != nil {
+		return err
+	}
+	if class == "" {
+		if err := i.store.CompleteInboundAttempt(ctx, d.DeliveryID, attemptID, 200); err != nil {
+			return err
+		}
+		return i.queue.Ack(ctx, message.ID)
+	}
+	if err := i.store.FailInboundAttempt(ctx, d.DeliveryID, attemptID, class, 0, time.Now()); err != nil {
+		return err
+	}
+	if err := i.store.MarkInboundDLQ(ctx, d.DeliveryID, class); err != nil {
+		return err
+	}
+	return i.queue.MoveToDLQAndAck(ctx, message, class, attempt)
 }

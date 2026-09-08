@@ -21,6 +21,8 @@ type GatewayQueueHealth struct {
 }
 
 type GatewayHealth struct {
+	Adapter        GatewayComponentHealth `json:"adapter"`
+	Jenkins        GatewayComponentHealth `json:"jenkins"`
 	WebApp         GatewayComponentHealth `json:"web_app"`
 	Redis          GatewayQueueHealth     `json:"redis"`
 	InboundWorker  GatewayWorkerHealth    `json:"inbound_worker"`
@@ -29,13 +31,15 @@ type GatewayHealth struct {
 }
 
 type GatewayRouteComponents struct {
-	TelegramPolling       GatewayComponentHealth `json:"telegram_polling"`
-	BotAuthentication     GatewayComponentHealth `json:"bot_authentication"`
-	DestinationValidation GatewayComponentHealth `json:"destination_validation"`
-	BackendHealth         GatewayComponentHealth `json:"backend_health"`
-	Redis                 GatewayComponentHealth `json:"redis"`
-	InboundWorker         GatewayComponentHealth `json:"inbound_worker"`
-	OutboundWorker        GatewayComponentHealth `json:"outbound_worker"`
+	Adapter               *GatewayComponentHealth `json:"adapter,omitempty"`
+	Jenkins               *GatewayComponentHealth `json:"jenkins,omitempty"`
+	TelegramPolling       GatewayComponentHealth  `json:"telegram_polling"`
+	BotAuthentication     GatewayComponentHealth  `json:"bot_authentication"`
+	DestinationValidation GatewayComponentHealth  `json:"destination_validation"`
+	BackendHealth         GatewayComponentHealth  `json:"backend_health"`
+	Redis                 GatewayComponentHealth  `json:"redis"`
+	InboundWorker         GatewayComponentHealth  `json:"inbound_worker"`
+	OutboundWorker        GatewayComponentHealth  `json:"outbound_worker"`
 }
 
 type GatewayLifecycleCounts struct {
@@ -72,6 +76,7 @@ type GatewayDeliveryAttempt struct {
 }
 
 type GatewayDeliveryDetail struct {
+	Adapter       *AdapterExecution        `json:"adapter,omitempty"`
 	DeliveryID    string                   `json:"delivery_id"`
 	RouteKey      string                   `json:"route_key"`
 	RouteRevision int64                    `json:"route_revision"`

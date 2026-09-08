@@ -42,6 +42,7 @@ type InboundDelivery struct {
 	NextAttemptAt   string                `json:"next_attempt_at,omitempty"`
 	LastErrorClass  string                `json:"last_error_class,omitempty"`
 	RawUpdate       []byte                `json:"-"`
+	InboundTarget   string                `json:"-"`
 	BackendURL      string                `json:"-"`
 	BackendToken    string                `json:"-"`
 	CreatedAt       string                `json:"created_at"`

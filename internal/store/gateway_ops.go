@@ -157,6 +157,13 @@ func (s *Store) GetGatewayDeliveryDetail(ctx context.Context, routeKey, delivery
 	if err != nil {
 		return nil, err
 	}
+	if detail.Direction == "inbound" {
+		adapter, adapterErr := s.GetAdapterExecution(ctx, deliveryID)
+		if adapterErr != nil && !errors.Is(adapterErr, sql.ErrNoRows) {
+			return nil, adapterErr
+		}
+		detail.Adapter = adapter
+	}
 	detail.Attempts = []models.GatewayDeliveryAttempt{}
 	if detail.Direction == "outbound" {
 		rows, queryErr := s.db.QueryContext(ctx, `SELECT attempt_id,sequence,error_class,started_at,ended_at FROM gateway_delivery_attempts WHERE delivery_id=? ORDER BY sequence`, deliveryID)
@@ -380,12 +387,12 @@ func dlqTable(direction string) string {
 func (s *Store) GetGatewayRouteProbeTarget(ctx context.Context, routeKey string) (*models.GatewayRouteProbeTarget, error) {
 	var target models.GatewayRouteProbeTarget
 	var tokenCiphertext, backendCiphertext string
-	err := s.db.QueryRowContext(ctx, `SELECT a.token_ciphertext,d.chat_id,COALESCE(h.health_url,''),r.inbound_backend_token_ciphertext
+	err := s.db.QueryRowContext(ctx, `SELECT r.inbound_target,a.token_ciphertext,d.chat_id,COALESCE(h.health_url,''),r.inbound_backend_token_ciphertext
 		FROM gateway_business_routes r
 		JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
 		JOIN gateway_telegram_destinations d ON d.id=r.destination_id
 		LEFT JOIN gateway_backend_health_config h ON h.route_id=r.id
-		WHERE r.route_key=?`, routeKey).Scan(&tokenCiphertext, &target.ChatID, &target.BackendHealthURL, &backendCiphertext)
+		WHERE r.route_key=?`, routeKey).Scan(&target.InboundTarget, &tokenCiphertext, &target.ChatID, &target.BackendHealthURL, &backendCiphertext)
 	if err != nil {
 		return nil, err
 	}

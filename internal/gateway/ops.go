@@ -32,6 +32,7 @@ type Operations struct {
 	inbound       WorkerProbe
 	telegram      TelegramProbe
 	backendClient *http.Client
+	adapter       *Adapter
 }
 
 type TelegramProbe interface {
@@ -47,6 +48,8 @@ func NewOperations(repository OperationsStore, outboundQueue, inboundQueue Opera
 		telegram: telegram, backendClient: backendClient}
 }
 
+func (o *Operations) SetAdapter(adapter *Adapter) { o.adapter = adapter }
+
 func (o *Operations) Health(ctx context.Context) models.GatewayHealth {
 	now := time.Now().UTC()
 	result := models.GatewayHealth{
@@ -54,6 +57,12 @@ func (o *Operations) Health(ctx context.Context) models.GatewayHealth {
 		InboundWorker:  workerSnapshot(o.inbound, now),
 		OutboundWorker: workerSnapshot(o.outbound, now),
 		CheckedAt:      now.Format(time.RFC3339Nano),
+	}
+	result.Adapter = models.GatewayComponentHealth{Status: "unavailable", Detail: "not_configured"}
+	result.Jenkins = result.Adapter
+	if o.adapter != nil {
+		result.Adapter = models.GatewayComponentHealth{Status: "healthy", Detail: "embedded", CheckedAt: result.CheckedAt}
+		result.Jenkins = o.adapter.JenkinsHealth(ctx)
 	}
 	observations := make([]QueueObservation, 0, 2)
 	for _, queue := range []OperationalQueue{o.outboundQueue, o.inboundQueue} {
@@ -133,7 +142,11 @@ func (o *Operations) RouteMetrics(ctx context.Context, routeKey string) (*models
 			result.Components.DestinationValidation = models.GatewayComponentHealth{Status: "healthy", CheckedAt: checkedAt}
 		}
 	}
-	if target.BackendHealthURL == "" {
+	if target.InboundTarget == "it_manage" {
+		result.Components.Adapter = &health.Adapter
+		result.Components.Jenkins = &health.Jenkins
+		result.Components.BackendHealth = models.GatewayComponentHealth{Status: "unavailable", Detail: "embedded_adapter"}
+	} else if target.BackendHealthURL == "" {
 		result.Components.BackendHealth = models.GatewayComponentHealth{Status: "unavailable", Detail: "health_endpoint_not_configured"}
 	} else {
 		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.BackendHealthURL, nil)

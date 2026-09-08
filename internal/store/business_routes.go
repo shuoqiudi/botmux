@@ -102,6 +102,11 @@ func (s *Store) migrateBusinessRoutes() error {
 			}
 		}
 	}
+	for _, table := range []string{"gateway_business_routes", "gateway_route_revisions"} {
+		if err := addColumnIfMissing(s.db, table, "inbound_target", "TEXT NOT NULL DEFAULT 'backend'"); err != nil {
+			return err
+		}
+	}
 	return s.migrateInboundDeliveries()
 }
 
@@ -230,7 +235,7 @@ func (s *Store) scanBusinessRoute(scanner interface{ Scan(...any) error }) (*mod
 	var r models.BusinessRoute
 	var callers, backendCiphertext string
 	err := scanner.Scan(&r.ID, &r.RouteKey, &r.DisplayName, &r.BotAccountID, &r.DestinationID,
-		&r.InboundEnabled, &r.InboundBackendURL, &r.InboundBackendHealthURL, &backendCiphertext, &r.OutboundEnabled, &callers, &r.Enabled,
+		&r.InboundTarget, &r.InboundEnabled, &r.InboundBackendURL, &r.InboundBackendHealthURL, &backendCiphertext, &r.OutboundEnabled, &callers, &r.Enabled,
 		&r.Revision, &r.Status, &r.LastValidatedAt, &r.CreatedAt, &r.UpdatedAt,
 		&r.BotAccountName, &r.BotUsername, &r.DestinationName, &r.DestinationChatID)
 	if err != nil {
@@ -254,7 +259,7 @@ func (s *Store) scanBusinessRoute(scanner interface{ Scan(...any) error }) (*mod
 
 const businessRouteSelect = `
 	SELECT r.id,r.route_key,r.display_name,r.bot_account_id,r.destination_id,
-		r.inbound_enabled,r.inbound_backend_url,COALESCE(h.health_url,''),r.inbound_backend_token_ciphertext,r.outbound_enabled,r.allowed_callers,r.enabled,
+		r.inbound_target,r.inbound_enabled,r.inbound_backend_url,COALESCE(h.health_url,''),r.inbound_backend_token_ciphertext,r.outbound_enabled,r.allowed_callers,r.enabled,
 		r.revision,r.status,r.last_validated_at,r.created_at,r.updated_at,
 		a.name,a.username,d.name,d.chat_id
 	FROM gateway_business_routes r
@@ -289,8 +294,8 @@ func insertBusinessRoute(s *Store, exec sqlExecer, r models.BusinessRoute) (int6
 	if err != nil {
 		return 0, err
 	}
-	res, err := exec.Exec(`INSERT INTO gateway_business_routes(route_key,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,revision,status,last_validated_at,created_at,updated_at) VALUES(?,?,?,?,?,?, '',?,?,?,?,1,?,?,?,?)`,
-		r.RouteKey, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now, now)
+	res, err := exec.Exec(`INSERT INTO gateway_business_routes(route_key,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,revision,status,last_validated_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,1,?,?,?,?)`,
+		r.RouteKey, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, routeInboundTarget(r), r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -298,8 +303,8 @@ func insertBusinessRoute(s *Store, exec sqlExecer, r models.BusinessRoute) (int6
 	if _, err := exec.Exec(`INSERT INTO gateway_backend_health_config(route_id,health_url) VALUES(?,?)`, id, r.InboundBackendHealthURL); err != nil {
 		return 0, err
 	}
-	_, err = exec.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
-		id, 1, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now)
+	_, err = exec.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
+		id, 1, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, routeInboundTarget(r), r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now)
 	return id, err
 }
 
@@ -323,8 +328,8 @@ func (s *Store) UpdateBusinessRoute(routeKey string, r models.BusinessRoute) err
 	if err != nil {
 		return err
 	}
-	res, err := tx.Exec(`UPDATE gateway_business_routes SET display_name=?,bot_account_id=?,destination_id=?,inbound_enabled=?,inbound_backend_url=?,inbound_backend_token='',inbound_backend_token_ciphertext=?,outbound_enabled=?,allowed_callers=?,enabled=?,revision=?,status=?,last_validated_at=?,updated_at=? WHERE route_key=? AND revision=?`,
-		r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext,
+	res, err := tx.Exec(`UPDATE gateway_business_routes SET display_name=?,bot_account_id=?,destination_id=?,inbound_enabled=?,inbound_target=?,inbound_backend_url=?,inbound_backend_token='',inbound_backend_token_ciphertext=?,outbound_enabled=?,allowed_callers=?,enabled=?,revision=?,status=?,last_validated_at=?,updated_at=? WHERE route_key=? AND revision=?`,
+		r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, routeInboundTarget(r), r.InboundBackendURL, backendCiphertext,
 		r.OutboundEnabled, callers, r.Enabled, nextRevision, r.Status, r.LastValidatedAt, now, routeKey, existing.Revision)
 	if err != nil {
 		return err
@@ -336,8 +341,8 @@ func (s *Store) UpdateBusinessRoute(routeKey string, r models.BusinessRoute) err
 	if _, err := tx.Exec(`INSERT INTO gateway_backend_health_config(route_id,health_url) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET health_url=excluded.health_url`, existing.ID, r.InboundBackendHealthURL); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
-		existing.ID, nextRevision, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now)
+	_, err = tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
+		existing.ID, nextRevision, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, routeInboundTarget(r), r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now)
 	if err != nil {
 		return err
 	}
@@ -437,4 +442,11 @@ func (s *Store) ValidateBusinessRouteReferences(botAccountID, destinationID int6
 		return fmt.Errorf("destination does not belong to bot account")
 	}
 	return nil
+}
+
+func routeInboundTarget(r models.BusinessRoute) string {
+	if r.InboundTarget == "" {
+		return "backend"
+	}
+	return r.InboundTarget
 }

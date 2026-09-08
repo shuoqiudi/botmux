@@ -4421,28 +4421,29 @@ function closeUserProfile() {
 </div>
 
 <div id="businessRouteSetupModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeBusinessRouteSetup()">
-  <div class="modal" style="max-width:720px;max-height:90vh;overflow:auto">
+  <div class="modal" style="width:720px;max-width:calc(100vw - 32px);max-height:90vh;overflow:auto">
     <h3 id="businessRouteSetupTitle">Create Business Route</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
       <div class="panel">
         <div class="panel-title" id="businessBotAccountTitle">Bot Account</div>
-        <div class="modal-field"><label id="businessBotNameLabel">Display name</label><input id="businessBotName" autocomplete="off"></div>
+        <div class="modal-field"><label id="businessBotNameLabel">Display name</label><input type="text" id="businessBotName" autocomplete="off"></div>
         <div class="modal-field"><label id="businessBotTokenLabel">Bot token (write-only)</label><input id="businessBotToken" type="password" autocomplete="new-password"></div>
       </div>
       <div class="panel">
         <div class="panel-title" id="businessDestinationTitle">Telegram Destination</div>
-        <div class="modal-field"><label id="businessDestinationNameLabel">Display name</label><input id="businessDestinationName" autocomplete="off"></div>
+        <div class="modal-field"><label id="businessDestinationNameLabel">Display name</label><input type="text" id="businessDestinationName" autocomplete="off"></div>
         <div class="modal-field"><label id="businessDestinationChatLabel">Chat ID</label><input id="businessDestinationChat" type="number"></div>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
       <div class="panel-title" id="businessRoutePanelTitle">Business Route</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
-        <div class="modal-field"><label>route_key</label><input id="businessRouteKey" placeholder="it_manage" pattern="[a-z0-9_-]+"></div>
-        <div class="modal-field"><label id="businessRouteNameLabel">Display name</label><input id="businessRouteName"></div>
+        <div class="modal-field"><label>route_key</label><input type="text" id="businessRouteKey" placeholder="it_manage" pattern="[a-z0-9_-]+"></div>
+        <div class="modal-field"><label id="businessRouteNameLabel">Display name</label><input type="text" id="businessRouteName"></div>
+        <div class="modal-field"><label id="businessRouteTargetLabel">Inbound target</label><select class="route-modal-select" id="businessRouteTarget" onchange="updateBusinessRouteTarget()"><option value="backend" id="businessRouteTargetBackend">HTTP backend</option><option value="it_manage" id="businessRouteTargetAdapter">Embedded it_manage Adapter</option></select></div>
         <div class="modal-field"><label id="businessRouteBackendLabel">Inbound backend URL</label><input id="businessRouteBackend" type="url" placeholder="http://service/telegram"></div>
 		<div class="modal-field"><label id="businessRouteBackendHealthLabel">Backend health URL</label><input id="businessRouteBackendHealth" type="url" placeholder="http://service/health"></div>
-        <div class="modal-field"><label id="businessRouteCallersLabel">Allowed callers</label><input id="businessRouteCallers" placeholder="it_manage, it_monitor"></div>
+        <div class="modal-field"><label id="businessRouteCallersLabel">Allowed callers</label><input type="text" id="businessRouteCallers" placeholder="it_manage, it_monitor"></div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:18px;margin-top:8px">
         <label><input id="businessRouteInbound" type="checkbox"> <span id="businessRouteInboundLabel">Inbound</span></label>
@@ -4472,6 +4473,7 @@ function applyBusinessRouteLang() {
     businessDestinationTitle: 'telegram_destination', businessBotNameLabel: 'display_name',
     businessDestinationNameLabel: 'display_name', businessBotTokenLabel: 'bot_token_write_only',
     businessDestinationChatLabel: 'chat_id', businessRouteNameLabel: 'display_name',
+    businessRouteTargetLabel: 'gateway_inbound_target', businessRouteTargetBackend: 'gateway_target_backend', businessRouteTargetAdapter: 'gateway_target_adapter',
     businessRouteBackendLabel: 'inbound_backend', businessRouteCallersLabel: 'allowed_callers',
 	businessRouteBackendHealthLabel: 'gateway_backend_health_url',
     businessRouteInboundLabel: 'inbound', businessRouteOutboundLabel: 'outbound',
@@ -4520,7 +4522,7 @@ async function loadBusinessRoutes() {
             <span class="badge">${esc(route.destination_name)}</span>
             <span class="badge ${route.inbound_enabled ? 'badge-admin' : ''}">${t('inbound')}: ${route.inbound_enabled ? t('enabled') : t('disabled')}</span>
             <span class="badge ${route.outbound_enabled ? 'badge-proxy' : ''}">${t('outbound')}: ${route.outbound_enabled ? t('enabled') : t('disabled')}</span>
-            <span class="badge">${t('backend_credential')}: ${route.backend_credential_set ? t('configured') : t('not_configured')}</span>
+            ${route.inbound_target === 'it_manage' ? `<span class="badge">${t('gateway_target_adapter')}</span>` : `<span class="badge">${t('backend_credential')}: ${route.backend_credential_set ? t('configured') : t('not_configured')}</span>`}
           </div>
 		  ${route._ops ? `<div style="font-family:var(--ff-mono);font-size:10px;color:var(--text3);margin-top:6px">
 		  ${t('gateway_accepted')}: ${route._ops.counts.accepted} · ${t('gateway_succeeded')}: ${route._ops.counts.succeeded} · ${t('gateway_retrying')}: ${route._ops.counts.retrying} · ${t('gateway_reconciling')}: ${route._ops.counts.reconciling} · ${t('gateway_dead_lettered')}: ${route._ops.counts.dead_lettered} · ${t('gateway_queue_depth')}: ${route._ops.queue_depth} · ${t('gateway_oldest_age')}: ${route._ops.oldest_pending_age_ms}ms · ${t('gateway_latency')}: ${route._ops.average_end_to_end_latency_ms}ms</div>
@@ -4536,12 +4538,22 @@ async function loadBusinessRoutes() {
   }
 }
 
+function updateBusinessRouteTarget() {
+  const embedded = document.getElementById('businessRouteTarget').value === 'it_manage';
+  for (const id of ['businessRouteBackend', 'businessRouteBackendHealth']) {
+    document.getElementById(id).closest('.modal-field').style.display = embedded ? 'none' : '';
+  }
+  if (embedded) document.getElementById('businessRouteOutbound').checked = true;
+}
+
 function showBusinessRouteSetup() {
   document.getElementById('businessRouteSetupModal').style.display = 'flex';
   document.getElementById('businessRouteSetupResult').textContent = '';
   for (const id of ['businessBotName','businessBotToken','businessDestinationName','businessDestinationChat','businessRouteKey','businessRouteName','businessRouteBackend','businessRouteBackendHealth','businessRouteCallers']) {
     document.getElementById(id).value = '';
   }
+  document.getElementById('businessRouteTarget').value = 'backend';
+  updateBusinessRouteTarget();
   document.getElementById('businessRouteInbound').checked = false;
   document.getElementById('businessRouteOutbound').checked = true;
   document.getElementById('businessRouteEnabled').checked = true;
@@ -4556,13 +4568,14 @@ function closeBusinessRouteSetup() {
 async function createBusinessRouteSetup() {
   const result = document.getElementById('businessRouteSetupResult');
   const inbound = document.getElementById('businessRouteInbound').checked;
+  const target = document.getElementById('businessRouteTarget').value;
   const payload = {
     bot_account: {name: document.getElementById('businessBotName').value.trim(), token: document.getElementById('businessBotToken').value.trim()},
     destination: {name: document.getElementById('businessDestinationName').value.trim(), chat_id: Number(document.getElementById('businessDestinationChat').value)},
     route: {
       route_key: document.getElementById('businessRouteKey').value.trim(), display_name: document.getElementById('businessRouteName').value.trim(),
-      inbound_enabled: inbound, inbound_backend_url: document.getElementById('businessRouteBackend').value.trim(),
-	  inbound_backend_health_url: document.getElementById('businessRouteBackendHealth').value.trim(),
+      inbound_target: target, inbound_enabled: inbound, inbound_backend_url: target === 'backend' ? document.getElementById('businessRouteBackend').value.trim() : '',
+	  inbound_backend_health_url: target === 'backend' ? document.getElementById('businessRouteBackendHealth').value.trim() : '',
       outbound_enabled: document.getElementById('businessRouteOutbound').checked,
       allowed_callers: document.getElementById('businessRouteCallers').value.split(',').map(v => v.trim()).filter(Boolean),
       enabled: document.getElementById('businessRouteEnabled').checked
@@ -4597,8 +4610,16 @@ async function editBusinessRoute(key) {
   if (chatValue === null) return;
   const token = prompt(t('bot_token_rotate_prompt'), '');
   if (token === null) return;
-  const backendCredential = prompt(t('backend_credential_prompt'), '');
-  if (backendCredential === null) return;
+  const target = prompt(t('gateway_target_prompt'), route.inbound_target || 'backend');
+  if (target === null) return;
+  if (!['backend', 'it_manage'].includes(target)) { toast(t('gateway_target_prompt'), 'error'); return; }
+  let backendCredential = '', backendURL = '';
+  if (target === 'backend') {
+    backendURL = prompt(t('inbound_backend'), route.inbound_backend_url || '');
+    if (backendURL === null) return;
+    backendCredential = prompt(t('backend_credential_prompt'), '');
+    if (backendCredential === null) return;
+  }
   const inboundValue = prompt(t('direction_prompt'), route.inbound_enabled ? 'on' : 'off');
   if (inboundValue === null) return;
   const outboundValue = prompt(t('outbound_direction_prompt'), route.outbound_enabled ? 'on' : 'off');
@@ -4618,8 +4639,8 @@ async function editBusinessRoute(key) {
     const latestRoute = await api(`/api/gateway/v1/routes/${route.route_key}`);
     await api(`/api/gateway/v1/routes/${route.route_key}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
       route_key:route.route_key, display_name:routeName, bot_account_id:account.id, destination_id:destination.id,
-      inbound_enabled:asEnabled(inboundValue), inbound_backend_url:route.inbound_backend_url || '', inbound_backend_token:backendCredential,
-	  inbound_backend_health_url:route.inbound_backend_health_url || '',
+      inbound_target:target, inbound_enabled:asEnabled(inboundValue), inbound_backend_url:backendURL, inbound_backend_token:backendCredential,
+	  inbound_backend_health_url:target === 'backend' ? route.inbound_backend_health_url || '' : '',
       outbound_enabled:asEnabled(outboundValue), allowed_callers:route.allowed_callers, enabled:asEnabled(enabledValue), expected_revision:latestRoute.revision
     })});
     toast(t('business_route_updated'));
@@ -4678,7 +4699,7 @@ async function loadGatewayHealth() {
 	const el = document.getElementById('gatewayHealthList');
 	try {
 		const health = await api('/api/gateway/v1/ops/health');
-		const entries = [['web_app', health.web_app], ['redis', health.redis], ['inbound_worker', health.inbound_worker], ['outbound_worker', health.outbound_worker]];
+		const entries = [['web_app', health.web_app], ['redis', health.redis], ['inbound_worker', health.inbound_worker], ['outbound_worker', health.outbound_worker], ['adapter', health.adapter], ['jenkins', health.jenkins]].filter(([,value]) => value);
 		el.innerHTML = entries.map(([name, value]) => `<span class="badge" style="margin:0 6px 6px 0">${esc(name)}: <span style="color:${value.status === 'healthy' ? 'var(--green)' : value.status === 'unhealthy' ? 'var(--magenta)' : 'var(--amber)'}">${esc(value.status)}</span></span>`).join('');
 	} catch(e) { el.textContent = e.message; }
 }

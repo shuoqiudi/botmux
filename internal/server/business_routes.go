@@ -352,6 +352,7 @@ type businessRouteInput struct {
 	DisplayName             string   `json:"display_name"`
 	BotAccountID            int64    `json:"bot_account_id"`
 	DestinationID           int64    `json:"destination_id"`
+	InboundTarget           string   `json:"inbound_target"`
 	InboundEnabled          bool     `json:"inbound_enabled"`
 	InboundBackendURL       string   `json:"inbound_backend_url"`
 	InboundBackendHealthURL string   `json:"inbound_backend_health_url"`
@@ -371,7 +372,21 @@ func normalizeRouteInput(input businessRouteInput, creating bool) (models.Busine
 	if input.DisplayName == "" || input.BotAccountID == 0 || input.DestinationID == 0 {
 		return models.BusinessRoute{}, errors.New("display_name, bot_account_id and destination_id are required")
 	}
-	if input.InboundEnabled {
+	if input.InboundTarget == "" {
+		input.InboundTarget = "backend"
+	}
+	if input.InboundTarget != "backend" && input.InboundTarget != "it_manage" {
+		return models.BusinessRoute{}, errors.New("unsupported inbound_target")
+	}
+	if input.InboundTarget == "it_manage" {
+		if input.InboundBackendURL != "" || input.InboundBackendToken != "" || input.InboundBackendHealthURL != "" {
+			return models.BusinessRoute{}, errors.New("embedded adapter does not use backend configuration")
+		}
+		if input.InboundEnabled && !input.OutboundEnabled {
+			return models.BusinessRoute{}, errors.New("embedded adapter requires outbound delivery")
+		}
+	}
+	if input.InboundEnabled && input.InboundTarget == "backend" {
 		u, err := url.ParseRequestURI(input.InboundBackendURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			return models.BusinessRoute{}, errors.New("a valid inbound_backend_url is required when inbound is enabled")
@@ -390,7 +405,7 @@ func normalizeRouteInput(input businessRouteInput, creating bool) (models.Busine
 		enabled = true
 	}
 	return models.BusinessRoute{RouteKey: input.RouteKey, DisplayName: input.DisplayName, BotAccountID: input.BotAccountID,
-		DestinationID: input.DestinationID, InboundEnabled: input.InboundEnabled, InboundBackendURL: strings.TrimSpace(input.InboundBackendURL),
+		DestinationID: input.DestinationID, InboundTarget: input.InboundTarget, InboundEnabled: input.InboundEnabled, InboundBackendURL: strings.TrimSpace(input.InboundBackendURL),
 		InboundBackendHealthURL: strings.TrimSpace(input.InboundBackendHealthURL),
 		InboundBackendToken:     strings.TrimSpace(input.InboundBackendToken),
 		OutboundEnabled:         input.OutboundEnabled, AllowedCallers: input.AllowedCallers, Enabled: enabled}, nil
@@ -512,7 +527,7 @@ func (s *Server) handleBusinessRoutes(w http.ResponseWriter, r *http.Request) {
 		writeBusinessError(w, 404, "not_found", errors.New("business route not found"))
 		return
 	}
-	if route.InboundBackendToken == "" {
+	if route.InboundTarget == "backend" && route.InboundBackendToken == "" {
 		route.InboundBackendToken = existing.InboundBackendToken
 	}
 	expected := input.ExpectedRevision

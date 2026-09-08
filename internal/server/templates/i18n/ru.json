@@ -411,5 +411,9 @@
   "gateway_replay": "ПОВТОРИТЬ",
   "gateway_discard": "ОТБРОСИТЬ",
   "gateway_replay_confirm": "Повторить эту доставку из DLQ?",
-  "gateway_discard_confirm": "Отбросить эту доставку из DLQ? После этого повтор невозможен."
+  "gateway_discard_confirm": "Отбросить эту доставку из DLQ? После этого повтор невозможен.",
+  "gateway_inbound_target": "Обработчик входящих сообщений",
+  "gateway_target_backend": "HTTP-сервер",
+  "gateway_target_adapter": "Встроенный адаптер it_manage",
+  "gateway_target_prompt": "Обработчик входящих сообщений: backend или it_manage"
 }

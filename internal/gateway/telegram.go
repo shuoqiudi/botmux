@@ -117,11 +117,12 @@ func (c *TelegramHTTPClient) call(ctx context.Context, token, method string, pay
 func (c *TelegramHTTPClient) SendMessage(ctx context.Context, token string, chatID int64, message SendMessage) (int64, error) {
 	payload := struct {
 		ChatID          int64            `json:"chat_id"`
+		MessageThreadID int64            `json:"message_thread_id,omitempty"`
 		Text            string           `json:"text"`
 		ParseMode       string           `json:"parse_mode,omitempty"`
 		ReplyMarkup     *ReplyMarkup     `json:"reply_markup,omitempty"`
 		ReplyParameters *ReplyParameters `json:"reply_parameters,omitempty"`
-	}{chatID, message.Text, message.ParseMode, message.ReplyMarkup, message.ReplyParameters}
+	}{chatID, message.MessageThreadID, message.Text, message.ParseMode, message.ReplyMarkup, message.ReplyParameters}
 	var result struct {
 		MessageID int64 `json:"message_id"`
 	}

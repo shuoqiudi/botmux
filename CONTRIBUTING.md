@@ -33,7 +33,10 @@ This is a monolithic Go application — all source files are in `package main`. 
 
 - **Keep it simple** — BotMux is a single-binary app. Avoid adding unnecessary dependencies.
 - **No CGO** — all dependencies must be pure Go to maintain easy cross-compilation.
-- **Test your changes** — add tests for new functionality when possible.
+- **Test your changes** — external-behavior and end-to-end suites live in
+  `tests/`. Narrow white-box unit and Redis contract tests that need access to
+  unexported package seams are colocated as `*_test.go` beside their package;
+  do not export production internals solely to move those tests.
 - **Update documentation** — if your change affects usage, update README.md and/or the Mintlify docs.
 - **Frontend is vanilla JS** — the SPA in `templates/index.html` uses no frameworks. Keep it that way.
 - **i18n** — if you add user-facing strings, add both English and Russian translations to the `i18n` object.

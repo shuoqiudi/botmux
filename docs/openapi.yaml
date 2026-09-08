@@ -753,18 +753,24 @@ paths:
           description: Method not allowed (must be POST)
 
   /api/bots/validate:
-    get:
+    post:
       tags: [Bots]
       summary: Validate a bot token
       description: Calls `getMe` on Telegram to verify the token is valid and returns bot info.
       operationId: validateBotToken
-      parameters:
-        - name: token
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Telegram bot token to validate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  writeOnly: true
+            example:
+              token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
       responses:
         '200':
           description: Token is valid
@@ -1984,7 +1990,7 @@ paths:
       tags: [Telegram Proxy]
       summary: Telegram API proxy (GET)
       description: |
-        Transparently proxies requests to `api.telegram.org`. No BotMux authentication required — the bot token in the URL is the authorization.
+        Transparently proxies requests to `api.telegram.org`. An administrator session or API key is required by default. A direct peer in a network explicitly configured with `-tgapi-trusted-cidrs` may call the compatibility API without a BotMux credential; forwarded headers are ignored.
 
         Several methods are intercepted and handled internally by BotMux instead of being forwarded to Telegram:
         - **`setWebhook`** — Registers the webhook URL as the bot's backend URL in BotMux and enables proxy mode. If the bot token is not yet registered and the `BOTMUX_ALLOW_AUTO_REGISTER` environment variable is set to `1`, BotMux auto-registers it via `getMe`. Otherwise, unknown tokens are rejected with a 401 error. Supports `url` and `drop_pending_updates` parameters. The webhook URL must use HTTPS (HTTP is only allowed for loopback addresses in non-strict mode; set `BOTMUX_STRICT_WEBHOOK=1` to require HTTPS always).
@@ -1994,7 +2000,6 @@ paths:
         - **`logOut`** — Returns `{"ok": true, "result": true}` without forwarding. Forwarding would disable the token for 10 minutes.
         - **`close`** — Returns `{"ok": true, "result": true}` without forwarding. Forwarding would shut down the bot instance on Telegram's side.
       operationId: telegramProxyGet
-      security: []
       parameters:
         - name: token
           in: path
@@ -2027,7 +2032,6 @@ paths:
 
         The same method interception rules described in the GET endpoint apply here. Methods like `setWebhook`, `deleteWebhook`, `getWebhookInfo`, `getUpdates`, `logOut`, and `close` are handled internally by BotMux rather than forwarded to Telegram.
       operationId: telegramProxyPost
-      security: []
       parameters:
         - name: token
           in: path
@@ -2067,11 +2071,10 @@ paths:
       tags: [Telegram Proxy]
       summary: File download proxy
       description: |
-        Downloads a file from Telegram and streams it to the client. This endpoint is a drop-in replacement for Telegram's file download URL, allowing you to configure it as your bot library's `base_file_url`.
+        Downloads a file from Telegram and streams it to the client. This endpoint is a drop-in replacement for Telegram's file download URL, allowing you to configure it as your bot library's `base_file_url`. An administrator session or API key is required by default; explicitly trusted direct-peer CIDRs may bypass that credential requirement.
 
         WebP files (stickers) are automatically converted to PNG for browser compatibility. Content types are detected from file extensions, with content sniffing as a fallback. Responses include a `Cache-Control: public, max-age=86400` header.
       operationId: telegramFileProxy
-      security: []
       parameters:
         - name: token
           in: path

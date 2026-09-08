@@ -23,6 +23,14 @@ http://localhost:8080/tgapi/bot{TOKEN}/sendMessage
 
 The proxy forwards all requests to Telegram and returns responses unchanged, except for [intercepted methods](#intercepted-methods) that BotMux handles internally.
 
+## Authentication
+
+`/tgapi/` and `/tgapi/file/` require an admin session or admin API key by
+default. A legacy backend that cannot send an admin credential may connect from
+an isolated network explicitly listed with `-tgapi-trusted-cidrs`. BotMux checks
+the direct peer address and ignores forwarded headers; never trust a public or
+user-controlled network.
+
 ## File download proxy
 
 BotMux also provides a file download endpoint that makes it compatible as a drop-in `base_file_url` for Telegram bot libraries:

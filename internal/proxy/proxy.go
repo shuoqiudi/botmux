@@ -18,6 +18,7 @@ import (
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/skrashevich/botmux/internal/bot"
+	"github.com/skrashevich/botmux/internal/gateway"
 	"github.com/skrashevich/botmux/internal/llm"
 	"github.com/skrashevich/botmux/internal/models"
 	"github.com/skrashevich/botmux/internal/store"
@@ -192,6 +193,19 @@ type Manager struct {
 	tgAPIBaseURL      string        // base URL for Telegram API
 	retryDelayInitial time.Duration // initial backoff delay for pollLoop (default 1s)
 	retryDelayMax     time.Duration // maximum backoff delay for pollLoop (default 30s)
+	inbound           interface {
+		IngestUpdate(context.Context, int64, map[string]any) (gateway.IngestResult, error)
+	}
+}
+
+// SetInboundGateway installs the durable Business Route ingestion hook. The
+// Proxy Manager remains the sole owner of getUpdates and offset progression.
+func (pm *Manager) SetInboundGateway(inbound interface {
+	IngestUpdate(context.Context, int64, map[string]any) (gateway.IngestResult, error)
+}) {
+	pm.mu.Lock()
+	pm.inbound = inbound
+	pm.mu.Unlock()
 }
 
 type proxyRunner struct {
@@ -259,6 +273,16 @@ func (pm *Manager) RegisterManagedBot(botID int64, b *bot.Bot) {
 	log.Printf("[proxy] RegisterManagedBot: botID=%d", botID)
 }
 
+// ActivateManagedBot installs a validated native Bot instance and starts its
+// sole local polling runner. startBot serializes replacement with any existing
+// runner, so a token never gains two owners inside this process.
+func (pm *Manager) ActivateManagedBot(botID int64, b *bot.Bot) {
+	b.SetBotID(botID)
+	pm.RegisterManagedBot(botID, b)
+	pm.ClearWebhookMode(botID)
+	pm.startBot(botID)
+}
+
 // UnregisterManagedBot removes a Bot instance
 func (pm *Manager) UnregisterManagedBot(botID int64) {
 	pm.mu.Lock()
@@ -324,12 +348,24 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) bool {
 		return false
 	}
 
+	updateID, _ := rawUpdate["update_id"].(float64)
+	const bridgeUpdateIDThreshold = int64(1_000_000_000)
+	pm.mu.Lock()
+	inbound := pm.inbound
+	pm.mu.Unlock()
+	if inbound != nil && int64(updateID) > 0 && int64(updateID) < bridgeUpdateIDThreshold {
+		if _, err := inbound.IngestUpdate(context.Background(), botID, rawUpdate); err != nil {
+			pm.store.UpdateBotStatus(botID, "Gateway inbound persistence unavailable", "")
+			log.Printf("[proxy] ProcessUpdate: botID=%d inbound persistence failed: %v", botID, err)
+			return false
+		}
+	}
+
 	// Enqueue for long-poll consumers (before any other processing)
 	if b.LongPollEnabled {
 		pm.EnqueueUpdate(botID, rawUpdate)
 	}
 
-	updateID, _ := rawUpdate["update_id"].(float64)
 	updateSummary := summarizeUpdate(rawUpdate)
 
 	// Management: process update for chat/message tracking (before forwarding,
@@ -368,7 +404,6 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) bool {
 	// small positive ints (<1e9 in practice). Advancing bot.Offset past a real
 	// Telegram id would permanently skip all future real updates. Threshold
 	// 10^9 is a safe sentinel between real TG range and bridge synthetic range.
-	const bridgeUpdateIDThreshold = int64(1_000_000_000)
 	if ackOffset {
 		if realID := int64(updateID); realID > 0 && realID < bridgeUpdateIDThreshold {
 			pm.store.UpdateBotOffset(botID, realID+1)

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/hmac"
 	"database/sql"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -12,18 +14,35 @@ import (
 )
 
 type Store struct {
-	db     *sql.DB
-	subsMu sync.RWMutex
-	subs   map[chan models.Message]struct{}
+	db        *sql.DB
+	secretKey []byte
+	subsMu    sync.RWMutex
+	subs      map[chan models.Message]struct{}
+	// gatewayMu keeps the small SQLite/Redis acceptance window deterministic.
+	// Native BotMux data paths remain independent.
+	gatewayMu sync.Mutex
 }
 
 func NewStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	key, err := loadOrCreateSecretKey(path)
+	if err != nil {
+		return nil, err
+	}
+	return NewStoreWithSecretKey(path, key)
+}
+
+// NewStoreWithSecretKey opens a store with an operator-managed AES-256 key.
+// Production deployments should load key from a mounted file with LoadSecretKey.
+func NewStoreWithSecretKey(path string, key []byte) (*Store, error) {
+	if len(key) != 32 {
+		return nil, errors.New("Gateway secret key must be exactly 32 bytes")
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
 
-	s := &Store{db: db, subs: make(map[chan models.Message]struct{})}
+	s := &Store{db: db, secretKey: append([]byte(nil), key...), subs: make(map[chan models.Message]struct{})}
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
@@ -426,6 +445,19 @@ func (s *Store) migrate() error {
 			hash, time.Now().Format(time.RFC3339))
 	}
 
+	if err := s.migrateBusinessRoutes(); err != nil {
+		return err
+	}
+	if err := s.migrateGatewayOutbound(); err != nil {
+		return err
+	}
+	if err := s.migrateGatewaySecurity(); err != nil {
+		return err
+	}
+	if err := s.migrateSecretStorage(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -433,13 +465,17 @@ func (s *Store) migrate() error {
 
 func (s *Store) RegisterCLIBot(token, username string) (int64, error) {
 	var id int64
-	err := s.db.QueryRow(`SELECT id FROM bots WHERE token=?`, token).Scan(&id)
+	err := s.db.QueryRow(`SELECT id FROM bots WHERE token_fingerprint=?`, s.secretFingerprint(token)).Scan(&id)
 	if err == nil {
 		s.db.Exec(`UPDATE bots SET bot_username=?, manage_enabled=1 WHERE id=?`, username, id)
 		return id, nil
 	}
-	res, err := s.db.Exec(`INSERT INTO bots (name, token, bot_username, manage_enabled, source) VALUES (?, ?, ?, 1, 'cli')`,
-		username, token, username)
+	sealed, err := s.sealSecret(token)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.Exec(`INSERT INTO bots (name,token,token_ciphertext,token_fingerprint,bot_username,manage_enabled,source) VALUES (?, '',?,?,?,1,'cli')`,
+		username, sealed, s.secretFingerprint(token), username)
 	if err != nil {
 		return 0, err
 	}
@@ -451,10 +487,18 @@ func (s *Store) MigrateLegacyChats(botID int64) {
 }
 
 func (s *Store) AddBotConfig(b models.BotConfig) (int64, error) {
+	sealedToken, err := s.sealSecret(b.Token)
+	if err != nil {
+		return 0, err
+	}
+	sealedBackend, err := s.sealSecret(b.SecretToken)
+	if err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(`
-		INSERT INTO bots (name, token, bot_username, manage_enabled, proxy_enabled, backend_url, secret_token, polling_timeout, long_poll_enabled, source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'web')
-	`, b.Name, b.Token, b.BotUsername, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, b.SecretToken, b.PollingTimeout, b.LongPollEnabled)
+		INSERT INTO bots (name,token,token_ciphertext,token_fingerprint,bot_username,manage_enabled,proxy_enabled,backend_url,secret_token,secret_token_ciphertext,polling_timeout,long_poll_enabled,source)
+		VALUES (?, '',?,?, ?,?,?,?, '',?,?,?, 'web')
+	`, b.Name, sealedToken, s.secretFingerprint(b.Token), b.BotUsername, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, sealedBackend, b.PollingTimeout, b.LongPollEnabled)
 	if err != nil {
 		return 0, err
 	}
@@ -462,10 +506,18 @@ func (s *Store) AddBotConfig(b models.BotConfig) (int64, error) {
 }
 
 func (s *Store) UpdateBotConfig(b models.BotConfig) error {
-	_, err := s.db.Exec(`
-		UPDATE bots SET name=?, token=?, bot_username=?, manage_enabled=?, proxy_enabled=?, backend_url=?, secret_token=?, polling_timeout=?, long_poll_enabled=?
+	sealedToken, err := s.sealSecret(b.Token)
+	if err != nil {
+		return err
+	}
+	sealedBackend, err := s.sealSecret(b.SecretToken)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`
+		UPDATE bots SET name=?,token='',token_ciphertext=?,token_fingerprint=?,bot_username=?,manage_enabled=?,proxy_enabled=?,backend_url=?,secret_token='',secret_token_ciphertext=?,polling_timeout=?,long_poll_enabled=?
 		WHERE id=?
-	`, b.Name, b.Token, b.BotUsername, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, b.SecretToken, b.PollingTimeout, b.LongPollEnabled, b.ID)
+	`, b.Name, sealedToken, s.secretFingerprint(b.Token), b.BotUsername, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, sealedBackend, b.PollingTimeout, b.LongPollEnabled, b.ID)
 	return err
 }
 
@@ -475,7 +527,7 @@ func (s *Store) DeleteBotConfig(id int64) error {
 }
 
 func (s *Store) GetBotConfigs() ([]models.BotConfig, error) {
-	rows, err := s.db.Query(`SELECT id, name, token, bot_username, manage_enabled, proxy_enabled, backend_url, secret_token, polling_timeout, offset_id, last_error, last_activity, updates_forwarded, source, backend_status, backend_checked_at, long_poll_enabled, disabled FROM bots ORDER BY source DESC, name`)
+	rows, err := s.db.Query(`SELECT id,name,token_ciphertext,bot_username,manage_enabled,proxy_enabled,backend_url,secret_token_ciphertext,polling_timeout,offset_id,last_error,last_activity,updates_forwarded,source,backend_status,backend_checked_at,long_poll_enabled,disabled FROM bots ORDER BY source DESC,name`)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +536,16 @@ func (s *Store) GetBotConfigs() ([]models.BotConfig, error) {
 	var bots []models.BotConfig
 	for rows.Next() {
 		var b models.BotConfig
-		if err := rows.Scan(&b.ID, &b.Name, &b.Token, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &b.SecretToken, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled); err != nil {
+		var tokenCiphertext, backendCiphertext string
+		if err := rows.Scan(&b.ID, &b.Name, &tokenCiphertext, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &backendCiphertext, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled); err != nil {
+			return nil, err
+		}
+		b.Token, err = s.openSecret(tokenCiphertext)
+		if err != nil {
+			return nil, err
+		}
+		b.SecretToken, err = s.openSecret(backendCiphertext)
+		if err != nil {
 			return nil, err
 		}
 		bots = append(bots, b)
@@ -494,8 +555,17 @@ func (s *Store) GetBotConfigs() ([]models.BotConfig, error) {
 
 func (s *Store) GetBotConfig(id int64) (*models.BotConfig, error) {
 	var b models.BotConfig
-	err := s.db.QueryRow(`SELECT id, name, token, bot_username, manage_enabled, proxy_enabled, backend_url, secret_token, polling_timeout, offset_id, last_error, last_activity, updates_forwarded, source, backend_status, backend_checked_at, long_poll_enabled, disabled FROM bots WHERE id=?`, id).
-		Scan(&b.ID, &b.Name, &b.Token, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &b.SecretToken, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled)
+	var tokenCiphertext, backendCiphertext string
+	err := s.db.QueryRow(`SELECT id,name,token_ciphertext,bot_username,manage_enabled,proxy_enabled,backend_url,secret_token_ciphertext,polling_timeout,offset_id,last_error,last_activity,updates_forwarded,source,backend_status,backend_checked_at,long_poll_enabled,disabled FROM bots WHERE id=?`, id).
+		Scan(&b.ID, &b.Name, &tokenCiphertext, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &backendCiphertext, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled)
+	if err != nil {
+		return nil, err
+	}
+	b.Token, err = s.openSecret(tokenCiphertext)
+	if err != nil {
+		return nil, err
+	}
+	b.SecretToken, err = s.openSecret(backendCiphertext)
 	if err != nil {
 		return nil, err
 	}
@@ -504,8 +574,20 @@ func (s *Store) GetBotConfig(id int64) (*models.BotConfig, error) {
 
 func (s *Store) GetBotConfigByToken(token string) (*models.BotConfig, error) {
 	var b models.BotConfig
-	err := s.db.QueryRow(`SELECT id, name, token, bot_username, manage_enabled, proxy_enabled, backend_url, secret_token, polling_timeout, offset_id, last_error, last_activity, updates_forwarded, source, backend_status, backend_checked_at, long_poll_enabled, disabled FROM bots WHERE token=?`, token).
-		Scan(&b.ID, &b.Name, &b.Token, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &b.SecretToken, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled)
+	var tokenCiphertext, backendCiphertext string
+	err := s.db.QueryRow(`SELECT id,name,token_ciphertext,bot_username,manage_enabled,proxy_enabled,backend_url,secret_token_ciphertext,polling_timeout,offset_id,last_error,last_activity,updates_forwarded,source,backend_status,backend_checked_at,long_poll_enabled,disabled FROM bots WHERE token_fingerprint=?`, s.secretFingerprint(token)).
+		Scan(&b.ID, &b.Name, &tokenCiphertext, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &backendCiphertext, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled)
+	if err != nil {
+		return nil, err
+	}
+	b.Token, err = s.openSecret(tokenCiphertext)
+	if err != nil {
+		return nil, err
+	}
+	if !hmac.Equal([]byte(s.secretFingerprint(token)), []byte(s.secretFingerprint(b.Token))) {
+		return nil, sql.ErrNoRows
+	}
+	b.SecretToken, err = s.openSecret(backendCiphertext)
 	if err != nil {
 		return nil, err
 	}
@@ -1191,7 +1273,7 @@ func (s *Store) UserHasBotAccess(userID, botID int64) bool {
 
 func (s *Store) GetBotConfigsForUser(userID int64) ([]models.BotConfig, error) {
 	rows, err := s.db.Query(`
-		SELECT b.id, b.name, b.token, b.bot_username, b.manage_enabled, b.proxy_enabled, b.backend_url, b.secret_token, b.polling_timeout, b.offset_id, b.last_error, b.last_activity, b.updates_forwarded, b.source, b.backend_status, b.backend_checked_at, b.long_poll_enabled, b.disabled
+		SELECT b.id,b.name,b.token_ciphertext,b.bot_username,b.manage_enabled,b.proxy_enabled,b.backend_url,b.secret_token_ciphertext,b.polling_timeout,b.offset_id,b.last_error,b.last_activity,b.updates_forwarded,b.source,b.backend_status,b.backend_checked_at,b.long_poll_enabled,b.disabled
 		FROM bots b
 		INNER JOIN user_bots ub ON b.id = ub.bot_id
 		WHERE ub.user_id = ?
@@ -1203,7 +1285,16 @@ func (s *Store) GetBotConfigsForUser(userID int64) ([]models.BotConfig, error) {
 	var bots []models.BotConfig
 	for rows.Next() {
 		var b models.BotConfig
-		if err := rows.Scan(&b.ID, &b.Name, &b.Token, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &b.SecretToken, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled); err != nil {
+		var tokenCiphertext, backendCiphertext string
+		if err := rows.Scan(&b.ID, &b.Name, &tokenCiphertext, &b.BotUsername, &b.ManageEnabled, &b.ProxyEnabled, &b.BackendURL, &backendCiphertext, &b.PollingTimeout, &b.Offset, &b.LastError, &b.LastActivity, &b.UpdatesForwarded, &b.Source, &b.BackendStatus, &b.BackendCheckedAt, &b.LongPollEnabled, &b.Disabled); err != nil {
+			return nil, err
+		}
+		b.Token, err = s.openSecret(tokenCiphertext)
+		if err != nil {
+			return nil, err
+		}
+		b.SecretToken, err = s.openSecret(backendCiphertext)
+		if err != nil {
 			return nil, err
 		}
 		bots = append(bots, b)

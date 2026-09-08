@@ -49,6 +49,10 @@ Give it a bot token — it discovers which chats the bot is in, whether it has a
 |-----------------|----------|
 | ![User Management](screenshots/11-user-management.png) | ![API Keys](screenshots/12-api-keys.png) |
 
+| Business Routes |
+|-----------------|
+| ![Business Routes](screenshots/13-business-routes.png) |
+
 ## Features
 
 ### How It Works
@@ -263,7 +267,7 @@ Slack channel                    BotMux                         Telegram
 
 ### Authentication & Authorization
 - **Session-based authentication** with secure HTTP-only cookies (30-day sessions)
-- **Role-based access control** — two roles: `admin` (full access) and `user` (assigned bots only)
+- **Role-based access control** — `admin` (full access), `operator` (Gateway status and recovery), and `user` (assigned bots only)
 - **Default admin account** — auto-created on first run (`admin` / `admin`) with mandatory password change
 - **User management** — admin panel for adding, editing, and deleting users
 - **Bot access control** — many-to-many: one bot can be assigned to multiple users, one user can access multiple bots
@@ -273,6 +277,52 @@ Slack channel                    BotMux                         Telegram
 - **API key authentication** — Bearer token in `Authorization` header as alternative to cookies for programmatic access
 - **API key management** — admin can create, disable, and delete keys; keys are bound to users and inherit their permissions
 - Password hashing with bcrypt; API keys hashed with SHA-256
+
+### Telegram Gateway and Business Routes
+
+Business Routes are separate from BotMux's Telegram-to-Telegram Routing Rules.
+An administrator binds an immutable `route_key` to a managed Bot Account,
+Telegram Destination, optional inbound Backend, and direction controls. Creating
+the setup also registers the Bot Account as a native managed bot; BotMux is the
+only `getUpdates` owner for that token.
+
+Business workloads never send a Telegram token or Chat ID. They use a scoped
+workload credential and stable endpoints:
+
+```text
+POST /api/v1/routes/{route_key}/messages
+POST /api/v1/routes/{route_key}/callbacks/{callback_query_id}/answer
+GET  /api/v1/routes/{route_key}/deliveries/{delivery_id}
+```
+
+Every write requires `Authorization: Bearer <workload credential>` and an
+`Idempotency-Key`. The Gateway resolves the physical Bot and destination,
+durably appends to Redis Streams, and returns `202` with a Delivery ID. Admin
+configuration is under `/api/gateway/v1/`; operator health, Delivery, and DLQ
+recovery are under `/api/gateway/v1/ops/`. Workload credentials are shown once,
+and Telegram/Backend secrets are write-only.
+
+Production Gateway delivery requires Redis 6.2+ with AOF and persistent storage.
+Start BotMux with `-redis-addr`; use `-redis-password-file` when authentication is
+enabled. Back up both the SQLite database (including its WAL as appropriate) and
+the Redis volume. The encryption key is either loaded from
+`-gateway-key-file` (32 raw bytes, 64 hex characters, or base64 for 32 bytes) or
+created beside the database as `<db>.gateway-key`; losing or replacing this key
+makes stored credentials unreadable. Treat it as a required backup secret.
+
+The token-bearing `/tgapi/` compatibility API is admin-authenticated by default.
+Legacy backends that cannot add an admin credential may be placed on an isolated
+network explicitly allowed with `-tgapi-trusted-cidrs`. Do not trust a public,
+user-controlled, or reverse-proxy client network; forwarded headers are ignored.
+Business workloads should use the stable Route API instead.
+
+For cutover, use a new test bot and group, verify outbound, inbound callbacks,
+Redis restart/reclaim, rate limiting, and DLQ replay, then stop the old poller
+before enabling the Gateway owner. To roll back: disable the Business Route and
+confirm its Gateway poller is stopped, preserve SQLite/Redis evidence and
+dedupe state, restore the last direct-poller offset, start exactly one old
+poller, and verify one Update plus one callback before restoring traffic. Never
+run old and Gateway polling owners concurrently for one token.
 
 ### Internationalization (i18n)
 - Interface available in **English** and **Russian**
@@ -371,8 +421,13 @@ copying it into the process environment.
 | `-token-file` | `""` | Read the Telegram bot token from a single-line file |
 | `-addr` | `:8080` | HTTP server listen address |
 | `-db` | `botdata.db` | Path to SQLite database file |
+| `-gateway-key-file` | `""` | Read the 32-byte Gateway encryption key from a mounted file |
 | `-webhook` | `""` | Set webhook URL for receiving updates (instead of polling) |
 | `-tg-api` | `""` | Custom Telegram API base URL (or `TELEGRAM_API_URL` env var) |
+| `-tgapi-trusted-cidrs` | `""` | CIDRs allowed to use token-bearing `/tgapi/` without admin auth |
+| `-redis-addr` | `""` | Redis 6.2+ address for durable Gateway Streams |
+| `-redis-password-file` | `""` | Read the Redis password from a single-line mounted file |
+| `-redis-db` | `0` | Redis database for durable Gateway Streams |
 | `-demo` | `false` | Enable demo mode (or `DEMO_MODE=true` env var) |
 | `-version` | `false` | Print version information and exit |
 
@@ -482,7 +537,9 @@ Backend ──sendMessage──> /tgapi/ (proxy) ──> Telegram API
 ```
 
 **Notes:**
-- No additional authentication required — the bot token in the URL is the authorization (same as Telegram API)
+- `/tgapi/` requires an admin session or admin API key by default. Legacy backends
+  that cannot send one must connect from an isolated network listed in
+  `-tgapi-trusted-cidrs`; the bot token in the URL is not sufficient.
 - Multiple backends can poll the same bot simultaneously
 - Push proxy and long polling can be active at the same time for the same bot
 - If your backend also sends messages, point those at `/tgapi/` too — see [Capturing Bot Replies](#capturing-bot-replies-api-proxy)
@@ -598,7 +655,7 @@ All endpoints return JSON. Errors return `{"error": "message"}` with HTTP 500. M
 | POST | `/api/bots/add` | Add a new bot (JSON body) |
 | POST | `/api/bots/update` | Update bot config (JSON body) |
 | POST | `/api/bots/delete?id=` | Delete a bot |
-| GET | `/api/bots/validate?token=` | Validate a bot token |
+| POST | `/api/bots/validate` | Validate a bot token (JSON body) |
 | GET | `/api/bots/health?id=` | Check backend health |
 
 ### Chats
@@ -675,6 +732,10 @@ All endpoints return JSON. Errors return `{"error": "message"}` with HTTP 500. M
 | GET | `/api/updates/poll?bot_id=&offset=&limit=&timeout=` | Poll for updates (auth required) |
 
 ### Telegram API Proxy
+
+These token-bearing endpoints require an admin session/API key unless the
+direct peer address matches `-tgapi-trusted-cidrs`. Forwarded headers are not
+used for this decision.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|

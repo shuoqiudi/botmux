@@ -10,9 +10,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/bridge"
+	"github.com/skrashevich/botmux/internal/gateway"
 	"github.com/skrashevich/botmux/internal/proxy"
 	"github.com/skrashevich/botmux/internal/server"
 	"github.com/skrashevich/botmux/internal/store"
@@ -50,8 +53,13 @@ func main() {
 	tokenFile := flag.String("token-file", "", "Read the Telegram bot token from a file")
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	dbPath := flag.String("db", "botdata.db", "SQLite database path")
+	gatewayKeyFile := flag.String("gateway-key-file", "", "Read the 32-byte Gateway encryption key from a mounted file")
 	webhookURL := flag.String("webhook", "", "Set webhook URL for the CLI bot (requires -token)")
 	tgAPI := flag.String("tg-api", "", "Custom Telegram API base URL (default: https://api.telegram.org)")
+	redisAddr := flag.String("redis-addr", "", "Redis address for durable Gateway Streams (for example redis:6379)")
+	redisPasswordFile := flag.String("redis-password-file", "", "Read the Redis password from a file")
+	redisDB := flag.Int("redis-db", 0, "Redis database for durable Gateway Streams")
+	tgapiTrustedCIDRs := flag.String("tgapi-trusted-cidrs", "", "Comma-separated CIDRs allowed to use /tgapi/ without admin authentication")
 	demoMode := flag.Bool("demo", false, "Enable demo mode with separate database and seeded data")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
@@ -91,7 +99,16 @@ func main() {
 	logBuf := logbuf.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, logBuf))
 
-	st, err := store.NewStore(*dbPath)
+	var st *store.Store
+	if *gatewayKeyFile != "" {
+		secretKey, keyErr := store.LoadSecretKey(*gatewayKeyFile)
+		if keyErr != nil {
+			log.Fatalf("Failed to load Gateway encryption key: %v", keyErr)
+		}
+		st, err = store.NewStoreWithSecretKey(*dbPath, secretKey)
+	} else {
+		st, err = store.NewStore(*dbPath)
+	}
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
@@ -102,11 +119,82 @@ func main() {
 	}
 
 	pm := proxy.NewManager(st, telegramAPIURL)
+	var outboundQueue *gateway.RedisQueue
+	var redisClient *redis.Client
+	var inboundQueue *gateway.RedisInboundQueue
+	var inboundGateway *gateway.Inbound
+	var inboundCancel context.CancelFunc
+	if *redisAddr != "" {
+		redisPassword, err := readSingleLineFile(*redisPasswordFile)
+		if err != nil {
+			log.Fatalf("Failed to load Redis password: %v", err)
+		}
+		startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		outboundQueue, err = gateway.NewRedisQueue(startupCtx, gateway.RedisConfig{
+			Addr: *redisAddr, Password: redisPassword, DB: *redisDB,
+		})
+		startupCancel()
+		if err != nil {
+			log.Fatalf("Failed to initialize durable Gateway queue: %v", err)
+		}
+
+		redisClient = redis.NewClient(&redis.Options{Addr: *redisAddr, Password: redisPassword, DB: *redisDB})
+		inboundQueue = gateway.NewRedisInboundQueue(redisClient)
+		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = redisClient.Ping(checkCtx).Err()
+		if err == nil {
+			err = inboundQueue.VerifyDurability(checkCtx)
+		}
+		cancel()
+		if err != nil {
+			log.Fatalf("Gateway Redis is not durably available: %v", err)
+		}
+		inboundGateway = gateway.NewInbound(st, inboundQueue, nil, gateway.InboundConfig{})
+		pm.SetInboundGateway(inboundGateway)
+		var inboundCtx context.Context
+		inboundCtx, inboundCancel = context.WithCancel(context.Background())
+		go func() {
+			for inboundCtx.Err() == nil {
+				if err := inboundGateway.Run(inboundCtx); err != nil && inboundCtx.Err() == nil {
+					log.Printf("[gateway] inbound worker stopped; retrying")
+				}
+				select {
+				case <-inboundCtx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+	}
+	if outboundQueue != nil {
+		defer outboundQueue.Close()
+	}
+	if redisClient != nil {
+		defer redisClient.Close()
+	}
+	if inboundCancel != nil {
+		defer inboundCancel()
+	}
 	srv := server.NewServer(st, pm)
 	srv.DemoMode = *demoMode
 	srv.LogBuf = logBuf
 	srv.VersionChecker = verpkg.NewChecker(version, commit, buildDate)
 	srv.TgAPIBaseURL = telegramAPIURL
+	if err := srv.SetTGAPITrustedCIDRs(*tgapiTrustedCIDRs); err != nil {
+		log.Fatalf("Invalid trusted /tgapi/ network configuration: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var gatewayService *gateway.Service
+	if outboundQueue != nil {
+		gatewayService = gateway.NewService(st, outboundQueue, gateway.NewTelegramHTTPClient(telegramAPIURL), "")
+		gatewayService.Start(ctx)
+		defer gatewayService.Stop()
+		srv.SetGatewayService(gatewayService)
+	}
+	srv.SetGatewayOperations(gateway.NewOperations(st, outboundQueue, inboundQueue, gatewayService, inboundGateway,
+		gateway.NewTelegramHTTPClient(telegramAPIURL), nil))
 
 	// Register CLI bot if token is provided
 	if *token != "" {
@@ -159,13 +247,29 @@ func main() {
 	bridgeMgr.InstallHooks()
 
 	// Graceful shutdown: SIGINT/SIGTERM triggers srv.Shutdown(15s).
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	if err := srv.StartContext(ctx, *addr); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 	log.Printf("shutdown: complete")
+}
+
+func readSingleLineFile(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+	value := strings.TrimSuffix(string(data), "\n")
+	value = strings.TrimSuffix(value, "\r")
+	if value == "" {
+		return "", fmt.Errorf("file is empty")
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("file must contain exactly one line")
+	}
+	return value, nil
 }
 
 func resolveTelegramToken(flagToken, tokenFile, environmentToken string) (string, error) {

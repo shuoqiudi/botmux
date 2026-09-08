@@ -206,6 +206,39 @@ const MOCK_DATA = {
   llmConfig: {
     api_url: '', api_key: '', model: '', system_prompt: '', enabled: false
   },
+  businessRoutes: [{
+    id: 1, route_key: 'incident_alerts', display_name: 'Incident alerts',
+    bot_account_id: 1, destination_id: 1, inbound_enabled: true,
+    outbound_enabled: true, enabled: true, status: 'active', revision: 3,
+    path: '/api/v1/routes/incident_alerts/messages', bot_username: 'alert_gateway_bot',
+    bot_account_name: 'Alert gateway', destination_name: 'Operations test group',
+    backend_credential_set: true, credential_configured: true
+  }],
+  gatewayMetrics: {
+    route_key: 'incident_alerts', revision: 3,
+    counts: { accepted: 1, succeeded: 128, retrying: 0, reconciling: 0, dead_lettered: 0 },
+    queue_depth: 1, oldest_pending_age_ms: 240, attempt_count: 129,
+    dlq_count: 0, average_end_to_end_latency_ms: 186, maximum_end_to_end_latency_ms: 820,
+    components: {
+      telegram_polling: {status:'healthy'}, bot_authentication: {status:'healthy'},
+      destination_validation: {status:'healthy'}, backend_health: {status:'healthy'},
+      redis: {status:'healthy'}, inbound_worker: {status:'healthy'}, outbound_worker: {status:'healthy'}
+    }
+  },
+  gatewayHealth: {
+    web_app: {status:'healthy'}, redis: {status:'healthy',persistence:'aof',depth:1,pending:0},
+    inbound_worker: {status:'healthy'}, outbound_worker: {status:'healthy'}
+  },
+  gatewayWorkloads: [{
+    id: 1, name: 'monitoring', status: 'active', revision: 2,
+    credentials: [{id:1,name:'primary',enabled:true,created_at:'2026-09-01T00:00:00Z'}],
+    permissions: [{route_key:'incident_alerts',action:'messages.send'},{route_key:'incident_alerts',action:'deliveries.read'}]
+  }],
+  gatewayAudit: [{
+    id: 1, route_id: 1, route_key: 'incident_alerts', revision: 3,
+    actor_kind: 'admin', actor_id: 'admin#1', action: 'destination.migrate',
+    diff: {chat_changed:true,destination_revision:2}, created_at: '2026-09-07T08:30:00Z'
+  }],
   botDescription: '',
   bridges: [
     {
@@ -254,6 +287,12 @@ function setupMockFetch(page, { authEnabled }) {
       if (path === '/api/chats/refresh') return MOCK.chats[0];
       if (path === '/api/llm-config') return MOCK.llmConfig;
       if (path === '/api/bridges') return MOCK.bridges;
+	  if (path === '/api/gateway/v1/routes') return MOCK.businessRoutes;
+	  if (path.startsWith('/api/gateway/v1/ops/routes/')) return MOCK.gatewayMetrics;
+	  if (path === '/api/gateway/v1/ops/health') return MOCK.gatewayHealth;
+	  if (path === '/api/gateway/v1/ops/dlq') return [];
+	  if (path === '/api/gateway/v1/workloads') return MOCK.gatewayWorkloads;
+	  if (path === '/api/gateway/v1/audit') return MOCK.gatewayAudit;
       if (path === '/api/health') return { status: 'ok' };
       if (path === '/api/bots/health') return { status: 'ok', latency_ms: 42 };
       // Catch-all for any unhandled /api/ endpoint — prevent 401 from real server
@@ -409,6 +448,15 @@ async function takeScreenshots() {
   // 12 - API Keys
   await page.screenshot({ path: join(SCREENSHOTS_DIR, '12-api-keys.png') });
   console.log('  12-api-keys.png');
+
+  await page.evaluate(() => closeAPIKeysModal());
+  await sleep(200);
+
+  // 13 - Business Routes (all identifiers and operational data are synthetic)
+  await page.evaluate(() => showBusinessRoutes());
+  await sleep(500);
+  await page.screenshot({ path: join(SCREENSHOTS_DIR, '13-business-routes.png') });
+  console.log('  13-business-routes.png');
 
   await browser.close();
   console.log('\nAll screenshots generated!');

@@ -35,6 +35,7 @@ type fakeTG struct {
 	requests     []recordedRequest
 	handlers     map[string]http.HandlerFunc // method override
 	botInfo      map[string]tgBotMeta        // token -> meta
+	chats        map[string]map[int64]string // token -> accessible chat ID -> title
 	updates      map[string][]map[string]any // token -> FIFO queue
 	offsetCursor map[string]int              // token -> last consumed update_id
 	files        map[string][]byte           // file_path -> bytes
@@ -48,6 +49,7 @@ func newFakeTG(t *testing.T) *fakeTG {
 		t:            t,
 		handlers:     make(map[string]http.HandlerFunc),
 		botInfo:      make(map[string]tgBotMeta),
+		chats:        make(map[string]map[int64]string),
 		updates:      make(map[string][]map[string]any),
 		offsetCursor: make(map[string]int),
 		files:        make(map[string][]byte),
@@ -56,6 +58,16 @@ func newFakeTG(t *testing.T) *fakeTG {
 	f.server = httptest.NewServer(http.HandlerFunc(f.route))
 	t.Cleanup(f.server.Close)
 	return f
+}
+
+// RegisterChat makes a destination visible to one fake bot.
+func (f *fakeTG) RegisterChat(token string, chatID int64, title string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.chats[token] == nil {
+		f.chats[token] = make(map[int64]string)
+	}
+	f.chats[token][chatID] = title
 }
 
 // RegisterBot registers a bot token with the fake server.
@@ -205,6 +217,17 @@ func (f *fakeTG) handleDefault(w http.ResponseWriter, r *http.Request, token, me
 	case "getMe":
 		code, body := f.defaultGetMe(token)
 		f.writeJSON(w, code, body)
+
+	case "getChat":
+		chatID := parseChatID(r, bodyBytes)
+		f.mu.Lock()
+		title, ok := f.chats[token][chatID]
+		f.mu.Unlock()
+		if !ok {
+			f.writeJSON(w, 400, map[string]any{"ok": false, "error_code": 400, "description": "Bad Request: chat not found"})
+			return
+		}
+		f.writeJSON(w, 200, map[string]any{"ok": true, "result": map[string]any{"id": chatID, "type": "supergroup", "title": title}})
 
 	case "getUpdates":
 		f.defaultGetUpdates(w, r, token, bodyBytes)

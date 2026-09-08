@@ -27,6 +27,7 @@ import (
 	"github.com/skrashevich/botmux/internal/auth"
 	"github.com/skrashevich/botmux/internal/bot"
 	"github.com/skrashevich/botmux/internal/bridge"
+	"github.com/skrashevich/botmux/internal/gateway"
 	"github.com/skrashevich/botmux/internal/models"
 	"github.com/skrashevich/botmux/internal/proxy"
 	"github.com/skrashevich/botmux/internal/store"
@@ -41,6 +42,8 @@ type Server struct {
 	store          *store.Store
 	proxy          *proxy.Manager
 	bridge         *bridge.Manager
+	gateway        *gateway.Service
+	gatewayOps     *gateway.Operations
 	mu             sync.RWMutex
 	bots           map[int64]*bot.Bot // botID -> Bot (for Telegram API calls)
 	webhookPath    string
@@ -49,6 +52,7 @@ type Server struct {
 	LogBuf         *logbuf.LogBuffer
 	VersionChecker *version.Checker
 	TgAPIBaseURL   string // override for Telegram API base URL (tests/custom deployments)
+	tgapiTrusted   []*net.IPNet
 }
 
 func NewServer(s *store.Store, p *proxy.Manager) *Server {
@@ -91,39 +95,84 @@ const authUserKey contextKey = "auth_user"
 // authMiddleware checks Bearer API key or session cookie and adds user to context
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var user *models.AuthUser
-
-		// Check Bearer token first
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			keyHash := auth.HashAPIKey(token)
-			u, err := s.store.GetUserByAPIKey(keyHash)
-			if err == nil && u != nil {
-				user = u
-			}
-		}
-
-		// Fall back to session cookie
+		user := s.authenticateUser(r)
 		if user == nil {
-			cookie, err := r.Cookie(auth.SessionCookieName)
-			if err != nil || cookie.Value == "" {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(401)
-				w.Write([]byte(`{"error":"unauthorized"}`))
-				return
-			}
-			u, err := s.store.GetUserBySession(cookie.Value)
-			if err != nil || u == nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(401)
-				w.Write([]byte(`{"error":"unauthorized"}`))
-				return
-			}
-			user = u
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
 		}
 
 		ctx := context.WithValue(r.Context(), authUserKey, user)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+func (s *Server) authenticateUser(r *http.Request) *models.AuthUser {
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if user, err := s.store.GetUserByAPIKey(auth.HashAPIKey(token)); err == nil {
+			return user
+		}
+	}
+	cookie, err := r.Cookie(auth.SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	user, err := s.store.GetUserBySession(cookie.Value)
+	if err != nil {
+		return nil
+	}
+	return user
+}
+
+// SetTGAPITrustedCIDRs configures networks allowed to use the token-bearing
+// compatibility API without an admin credential. With no configured CIDRs,
+// /tgapi/ is admin-authenticated only, including on a published port.
+func (s *Server) SetTGAPITrustedCIDRs(value string) error {
+	var networks []*net.IPNet
+	for _, raw := range strings.Split(value, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(raw)
+		if err != nil {
+			return fmt.Errorf("invalid trusted tgapi CIDR %q: %w", raw, err)
+		}
+		networks = append(networks, network)
+	}
+	s.tgapiTrusted = networks
+	return nil
+}
+
+func (s *Server) tgapiAccess(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		remoteIP := net.ParseIP(host)
+		for _, network := range s.tgapiTrusted {
+			if remoteIP != nil && network.Contains(remoteIP) {
+				next(w, r)
+				return
+			}
+		}
+		user := s.authenticateUser(r)
+		if user == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		if user.Role != "admin" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), authUserKey, user)))
 	}
 }
 
@@ -135,6 +184,21 @@ func (s *Server) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(403)
 			w.Write([]byte(`{"error":"forbidden"}`))
+			return
+		}
+		next(w, r)
+	})
+}
+
+// gatewayOperatorOnly permits read/recovery operations to administrators and
+// the narrower operator role. Gateway configuration remains admin-only.
+func (s *Server) gatewayOperatorOnly(next http.HandlerFunc) http.HandlerFunc {
+	return s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		user := getAuthUser(r)
+		if user == nil || (user.Role != "admin" && user.Role != "operator") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden"}`))
 			return
 		}
 		next(w, r)
@@ -230,9 +294,10 @@ func (s *Server) BuildMux() *http.ServeMux {
 		log.Printf("Webhook endpoint registered at %s", s.webhookPath)
 	}
 
-	// Telegram API proxy — no auth (backends use this)
-	mux.HandleFunc("/tgapi/file/", s.handleTelegramFileProxy)
-	mux.HandleFunc("/tgapi/", s.handleTelegramAPIProxy)
+	// Telegram API compatibility proxy. Token-bearing paths require an admin
+	// credential unless the peer belongs to an explicitly configured network.
+	mux.HandleFunc("/tgapi/file/", s.tgapiAccess(s.handleTelegramFileProxy))
+	mux.HandleFunc("/tgapi/", s.tgapiAccess(s.handleTelegramAPIProxy))
 
 	// Health check — no auth (no sensitive info)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +394,36 @@ func (s *Server) BuildMux() *http.ServeMux {
 	mux.HandleFunc("/api/routes/update", s.adminOnly(s.handleUpdateRoute))
 	mux.HandleFunc("/api/routes/delete", s.adminOnly(s.handleDeleteRoute))
 
+	// Stable business-facing Telegram routes. These are intentionally separate
+	// from BotMux's Telegram-to-Telegram routing rules above.
+	mux.HandleFunc("/api/bot-accounts", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/bot-accounts/", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/telegram-destinations", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/telegram-destinations/", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/business-routes/setup", s.adminOnly(s.handleBusinessRouteSetup))
+	mux.HandleFunc("/api/business-routes", s.adminOnly(s.handleBusinessRoutes))
+	mux.HandleFunc("/api/business-routes/", s.adminOnly(s.handleBusinessRoutes))
+	// Versioned aliases are the preferred admin contract. The shorter paths are
+	// retained for the bundled SPA and compatibility with early deployments.
+	mux.HandleFunc("/api/gateway/v1/bot-accounts", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/gateway/v1/bot-accounts/", s.adminOnly(s.handleBotAccounts))
+	mux.HandleFunc("/api/gateway/v1/destinations", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/gateway/v1/destinations/", s.adminOnly(s.handleTelegramDestinations))
+	mux.HandleFunc("/api/gateway/v1/routes/setup", s.adminOnly(s.handleBusinessRouteSetup))
+	mux.HandleFunc("/api/gateway/v1/routes", s.adminOnly(s.handleBusinessRoutes))
+	mux.HandleFunc("/api/gateway/v1/routes/", s.adminOnly(s.handleBusinessRoutes))
+	mux.HandleFunc("/api/gateway/v1/workloads", s.adminOnly(s.handleGatewayWorkloads))
+	mux.HandleFunc("/api/gateway/v1/workloads/", s.adminOnly(s.handleGatewayWorkloads))
+	mux.HandleFunc("/api/gateway/v1/audit", s.adminOnly(s.handleGatewayAudit))
+	mux.HandleFunc("/api/gateway/v1/ops/health", s.gatewayOperatorOnly(s.handleGatewayOpsHealth))
+	mux.HandleFunc("/api/gateway/v1/ops/dlq", s.gatewayOperatorOnly(s.handleGatewayOpsDLQ))
+	mux.HandleFunc("/api/gateway/v1/ops/dlq/", s.gatewayOperatorOnly(s.handleGatewayOpsDLQ))
+	mux.HandleFunc("/api/gateway/v1/ops/routes/", s.gatewayOperatorOnly(s.handleGatewayRouteOps))
+
+	// Workload-authenticated business interface. This intentionally does not
+	// accept admin sessions or the legacy user API keys.
+	mux.HandleFunc("/api/v1/routes/", s.handleGatewayOutbound)
+
 	// Bridges — admin only for management, no auth for incoming webhook
 	mux.HandleFunc("/api/bridges", s.adminOnly(s.handleBridgeList))
 	mux.HandleFunc("/api/bridges/add", s.adminOnly(s.handleBridgeAdd))
@@ -424,6 +519,14 @@ func (s *Server) handleI18n(w http.ResponseWriter, r *http.Request) {
 
 // Bot management handlers
 
+func redactBotConfig(bot models.BotConfig) models.BotConfig {
+	bot.TokenSet = bot.Token != ""
+	bot.SecretTokenSet = bot.SecretToken != ""
+	bot.Token = ""
+	bot.SecretToken = ""
+	return bot
+}
+
 // handleBotList returns the list of bots accessible to the current user.
 // @Summary List bots
 // @Description Returns all bots for admin users, or only assigned bots for regular users. Each entry includes a running status flag.
@@ -456,6 +559,7 @@ func (s *Server) handleBotList(w http.ResponseWriter, r *http.Request) {
 	}
 	var result []BotStatus
 	for _, b := range bots {
+		b = redactBotConfig(b)
 		bs := BotStatus{BotConfig: b, Running: s.proxy.IsRunning(b.ID)}
 		if mb := s.proxy.GetManagedBot(b.ID); mb != nil {
 			bs.BotTelegramID = mb.GetSelfID()
@@ -568,6 +672,12 @@ func (s *Server) handleBotUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Source = existing.Source
+	if req.Token == "" {
+		req.Token = existing.Token
+	}
+	if req.SecretToken == "" {
+		req.SecretToken = existing.SecretToken
+	}
 
 	// Re-validate token and update bot_username if token changed
 	if req.Token != existing.Token || req.BotUsername == "" {
@@ -640,7 +750,7 @@ func (s *Server) handleToggleDisabled(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bot.Disabled = newDisabled
-	writeJSON(w, bot)
+	writeJSON(w, redactBotConfig(*bot))
 }
 
 // handleBotValidate validates a Telegram bot token and returns the bot username.
@@ -648,13 +758,25 @@ func (s *Server) handleToggleDisabled(w http.ResponseWriter, r *http.Request) {
 // @Description Calls Telegram API to verify the token and returns the associated bot username. Admin only.
 // @Tags bots
 // @Produce json
-// @Param token query string true "Telegram bot token"
+// @Accept json
+// @Param request body object{token=string} true "Telegram bot token"
 // @Success 200 {object} map[string]string
 // @Failure 500 {object} map[string]string
-// @Router /api/bots/validate [get]
+// @Router /api/bots/validate [post]
 // @Security CookieAuth || BearerAuth
 func (s *Server) handleBotValidate(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeBusinessError(w, 400, "invalid_request", errors.New("invalid JSON body"))
+		return
+	}
+	token := req.Token
 	username, err := s.proxy.ValidateToken(token)
 	if err != nil {
 		writeError(w, err)
@@ -2450,10 +2572,10 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "user"
 	}
-	if req.Role != "admin" && req.Role != "user" {
+	if req.Role != "admin" && req.Role != "operator" && req.Role != "user" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
-		w.Write([]byte(`{"error":"role must be admin or user"}`))
+		w.Write([]byte(`{"error":"role must be admin, operator, or user"}`))
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)

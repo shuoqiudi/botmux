@@ -23,6 +23,12 @@ http://localhost:8080/tgapi/bot{TOKEN}/sendMessage
 
 代理将所有请求转发到 Telegram 并原样返回响应，但[被拦截的方法](#被拦截的方法)除外，这些方法由 BotMux 内部处理。
 
+## 身份认证
+
+默认情况下，`/tgapi/` 和 `/tgapi/file/` 需要管理员会话或管理员 API
+密钥。无法发送管理员凭据的旧后端只能从 `-tgapi-trusted-cidrs`
+明确列出的隔离网络连接。BotMux 仅检查直接对端地址并忽略转发请求头；请勿信任公网或用户可控网络。
+
 ## 文件下载代理
 
 BotMux 还提供文件下载端点，可作为 Telegram 机器人库的 `base_file_url` 直接替换：

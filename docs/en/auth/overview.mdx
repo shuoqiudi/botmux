@@ -25,13 +25,16 @@ BotMux provides dual authentication: cookie-based sessions and Bearer API keys.
 2. Falls back to session cookie
 3. 401 response if neither is valid
 
-## Unauthenticated Endpoints
+## Public Endpoints
 
 | Endpoint | Reason |
 |----------|--------|
 | `/` | SPA handles client-side auth |
 | `/api/health` | Health checks |
-| `/tgapi/*` | Backend API proxy (token is the auth) |
+
+`/tgapi/*` requires an administrator session or API key by default. An explicit
+`-tgapi-trusted-cidrs` allowlist can admit legacy backends by direct peer
+address without a BotMux credential.
 
 ## Default Admin
 

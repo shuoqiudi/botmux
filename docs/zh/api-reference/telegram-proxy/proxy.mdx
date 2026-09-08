@@ -33,7 +33,8 @@ WebP 文件（贴纸）会自动转换为 PNG。内容类型通过文件扩展�
 
 ## 身份验证
 
-无需额外身份验证——URL 中的机器人令牌即为授权凭证（与 Telegram API 相同）。
+默认需要管理员会话或 API 密钥。仅当旧后端的直接对端地址位于
+`-tgapi-trusted-cidrs` 中时，才能省略该凭据；转发请求头会被忽略。
 
 ## 消息捕获
 
@@ -45,7 +46,7 @@ WebP 文件（贴纸）会自动转换为 PNG。内容类型通过文件扩展�
 
 | 方法 | 行为 |
 |--------|----------|
-| `setWebhook` | 在 BotMux 中配置机器人的后端 URL 并启用代理模式。通过 `getMe` 自动注册未知机器人。支持 `url` 和 `drop_pending_updates` 参数。 |
+| `setWebhook` | 在 BotMux 中配置机器人的后端 URL 并启用代理模式。通过 `getMe` 自动注册未知机器人需要 `BOTMUX_ALLOW_AUTO_REGISTER=1`。支持 `url` 和 `drop_pending_updates` 参数。 |
 | `deleteWebhook` | 清除后端 URL 并禁用代理模式。支持 `drop_pending_updates`。 |
 | `getWebhookInfo` | 返回 BotMux 的内部 webhook 状态（`url`、`pending_update_count`、`has_custom_certificate`、`max_connections`、`ip_address`）。 |
 | `getUpdates` | 当启用长轮询时，从 BotMux 的内部队列返回数据，而不是转发到 Telegram。当机器人由 BotMux 管理但未启用长轮询时，返回空结果以防止冲突错误。 |

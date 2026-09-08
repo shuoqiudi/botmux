@@ -106,7 +106,7 @@ func TestGatewayAdapterRoundTrip(t *testing.T) {
 		case "/job/manage/23/consoleText":
 			identity := request["identity"].(map[string]any)
 			raw, _ := json.Marshal(map[string]any{"schema": "it_manage.management-result/v1", "request_id": identity["request_id"], "delivery_id": identity["delivery_id"], "status": "succeeded", "code": "", "detail": "password=jenkins-secret"})
-			fmt.Fprintf(w, "untrusted console secret\nIT_MANAGE_MANAGEMENT_RESULT_BEGIN:%s:IT_MANAGE_MANAGEMENT_RESULT_END\n", base64.StdEncoding.EncodeToString(raw))
+			fmt.Fprintf(w, "untrusted console secret\n[2026-09-08T09:35:28.412Z] IT_MANAGE_MANAGEMENT_RESULT_BEGIN:%s:IT_MANAGE_MANAGEMENT_RESULT_END\n", base64.StdEncoding.EncodeToString(raw))
 		default:
 			w.WriteHeader(404)
 		}

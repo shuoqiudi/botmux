@@ -53,6 +53,7 @@ func main() {
 	tokenFile := flag.String("token-file", "", "Read the Telegram bot token from a file")
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	dbPath := flag.String("db", "botdata.db", "SQLite database path")
+	adapterConfigFile := flag.String("adapter-config-file", "", "Read embedded it_manage Adapter configuration and Jenkins credentials from a mounted JSON secret")
 	gatewayKeyFile := flag.String("gateway-key-file", "", "Read the 32-byte Gateway encryption key from a mounted file")
 	webhookURL := flag.String("webhook", "", "Set webhook URL for the CLI bot (requires -token)")
 	tgAPI := flag.String("tg-api", "", "Custom Telegram API base URL (default: https://api.telegram.org)")
@@ -95,6 +96,18 @@ func main() {
 		*dbPath = "demo.db"
 	}
 
+	var adapterConfig *gateway.AdapterConfig
+	if *adapterConfigFile != "" {
+		if *redisAddr == "" {
+			log.Fatal("Embedded Adapter requires durable Gateway Redis")
+		}
+		config, configErr := gateway.LoadAdapterConfig(*adapterConfigFile)
+		if configErr != nil {
+			log.Fatal("Failed to load embedded Adapter configuration")
+		}
+		adapterConfig = &config
+	}
+
 	// Set up log buffer to capture application logs for web UI
 	logBuf := logbuf.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, logBuf))
@@ -123,7 +136,6 @@ func main() {
 	var redisClient *redis.Client
 	var inboundQueue *gateway.RedisInboundQueue
 	var inboundGateway *gateway.Inbound
-	var inboundCancel context.CancelFunc
 	if *redisAddr != "" {
 		redisPassword, err := readSingleLineFile(*redisPasswordFile)
 		if err != nil {
@@ -151,29 +163,13 @@ func main() {
 		}
 		inboundGateway = gateway.NewInbound(st, inboundQueue, nil, gateway.InboundConfig{})
 		pm.SetInboundGateway(inboundGateway)
-		var inboundCtx context.Context
-		inboundCtx, inboundCancel = context.WithCancel(context.Background())
-		go func() {
-			for inboundCtx.Err() == nil {
-				if err := inboundGateway.Run(inboundCtx); err != nil && inboundCtx.Err() == nil {
-					log.Printf("[gateway] inbound worker stopped; retrying")
-				}
-				select {
-				case <-inboundCtx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-		}()
 	}
+
 	if outboundQueue != nil {
 		defer outboundQueue.Close()
 	}
 	if redisClient != nil {
 		defer redisClient.Close()
-	}
-	if inboundCancel != nil {
-		defer inboundCancel()
 	}
 	srv := server.NewServer(st, pm)
 	srv.DemoMode = *demoMode
@@ -193,8 +189,36 @@ func main() {
 		defer gatewayService.Stop()
 		srv.SetGatewayService(gatewayService)
 	}
-	srv.SetGatewayOperations(gateway.NewOperations(st, outboundQueue, inboundQueue, gatewayService, inboundGateway,
-		gateway.NewTelegramHTTPClient(telegramAPIURL), nil))
+	var adapter *gateway.Adapter
+	if adapterConfig != nil {
+		adapter, err = gateway.NewAdapter(st, gatewayService, *adapterConfig, nil)
+		if err != nil {
+			log.Fatal("Failed to initialize embedded Adapter")
+		}
+		inboundGateway.SetAdapter(adapter)
+	}
+	operations := gateway.NewOperations(st, outboundQueue, inboundQueue, gatewayService, inboundGateway,
+		gateway.NewTelegramHTTPClient(telegramAPIURL), nil)
+	operations.SetAdapter(adapter)
+	srv.SetGatewayOperations(operations)
+	if inboundGateway != nil {
+		inboundCtx, cancelInbound := context.WithCancel(ctx)
+		inboundDone := make(chan struct{})
+		go func() {
+			defer close(inboundDone)
+			for inboundCtx.Err() == nil {
+				if err := inboundGateway.Run(inboundCtx); err != nil && inboundCtx.Err() == nil {
+					log.Print("[gateway] inbound worker stopped; retrying")
+				}
+				select {
+				case <-inboundCtx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+		defer func() { cancelInbound(); <-inboundDone }()
+	}
 
 	// Register CLI bot if token is provided
 	if *token != "" {

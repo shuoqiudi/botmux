@@ -130,8 +130,8 @@ func (s *Store) UpdateBusinessRouteExpected(routeKey string, r models.BusinessRo
 		return err
 	}
 	now, callers, next := nowRFC3339(), encodeCallers(r.AllowedCallers), current+1
-	res, err := tx.Exec(`UPDATE gateway_business_routes SET display_name=?,bot_account_id=?,destination_id=?,inbound_enabled=?,inbound_backend_url=?,inbound_backend_token='',inbound_backend_token_ciphertext=?,outbound_enabled=?,allowed_callers=?,enabled=?,revision=?,status=?,last_validated_at=?,updated_at=? WHERE id=? AND revision=?`,
-		r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, next, r.Status, r.LastValidatedAt, now, id, current)
+	res, err := tx.Exec(`UPDATE gateway_business_routes SET display_name=?,bot_account_id=?,destination_id=?,inbound_enabled=?,inbound_target=?,inbound_backend_url=?,inbound_backend_token='',inbound_backend_token_ciphertext=?,outbound_enabled=?,allowed_callers=?,enabled=?,revision=?,status=?,last_validated_at=?,updated_at=? WHERE id=? AND revision=?`,
+		r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, routeInboundTarget(r), r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, next, r.Status, r.LastValidatedAt, now, id, current)
 	if err != nil {
 		return err
 	}
@@ -141,8 +141,8 @@ func (s *Store) UpdateBusinessRouteExpected(routeKey string, r models.BusinessRo
 	if _, err := tx.Exec(`INSERT INTO gateway_backend_health_config(route_id,health_url) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET health_url=excluded.health_url`, id, r.InboundBackendHealthURL); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
-		id, next, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at) VALUES(?,?,?,?,?,?,?,?, '',?,?,?,?,?,?,?)`,
+		id, next, r.DisplayName, r.BotAccountID, r.DestinationID, r.InboundEnabled, routeInboundTarget(r), r.InboundBackendURL, backendCiphertext, r.OutboundEnabled, callers, r.Enabled, r.Status, r.LastValidatedAt, now); err != nil {
 		return err
 	}
 	action := "route.update"
@@ -217,8 +217,8 @@ func (s *Store) RotateBotAccount(id, expected int64, name, username, token, acto
 		if _, err := tx.Exec(`UPDATE gateway_business_routes SET revision=?,updated_at=? WHERE id=? AND revision=?`, next, nowRFC3339(), route.id, route.revision); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at)
-			SELECT id,?,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,'',inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,last_validated_at,? FROM gateway_business_routes WHERE id=?`, next, nowRFC3339(), route.id); err != nil {
+		if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at)
+			SELECT id,?,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,'',inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,last_validated_at,? FROM gateway_business_routes WHERE id=?`, next, nowRFC3339(), route.id); err != nil {
 			return err
 		}
 		if err := appendGatewayAudit(tx, route.id, next, "admin", actorID, "bot_token.rotate", map[string]any{"token_changed": token != "", "bot_account_revision": current + 1}); err != nil {
@@ -305,8 +305,8 @@ func (s *Store) MigrateTelegramDestination(d models.TelegramDestination, expecte
 		if changed, err := result.RowsAffected(); err != nil || changed != 1 {
 			return ErrRevisionConflict
 		}
-		if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at)
-			SELECT id,?,display_name,bot_account_id,destination_id,inbound_enabled,inbound_backend_url,'',inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,?,? FROM gateway_business_routes WHERE id=?`, next, d.ValidatedAt, nowRFC3339(), route.id); err != nil {
+		if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at)
+			SELECT id,?,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,'',inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,?,? FROM gateway_business_routes WHERE id=?`, next, d.ValidatedAt, nowRFC3339(), route.id); err != nil {
 			return err
 		}
 		if err := appendGatewayAudit(tx, route.id, next, "admin", actorID, "destination.migrate", map[string]any{"destination_revision": current + 1, "chat_changed": true}); err != nil {
@@ -385,7 +385,7 @@ func (s *Store) GetGatewayWorkloadAdmin(id int64) (*models.GatewayWorkloadAdmin,
 }
 
 func (s *Store) GetGatewayWorkloadsAdmin() ([]models.GatewayWorkloadAdmin, error) {
-	rows, err := s.db.Query(`SELECT id FROM gateway_workloads ORDER BY name,id`)
+	rows, err := s.db.Query(`SELECT id FROM gateway_workloads WHERE id>0 ORDER BY name,id`)
 	if err != nil {
 		return nil, err
 	}

@@ -212,7 +212,14 @@ const MOCK_DATA = {
     outbound_enabled: true, enabled: true, status: 'active', revision: 3,
     path: '/api/v1/routes/incident_alerts/messages', bot_username: 'alert_gateway_bot',
     bot_account_name: 'Alert gateway', destination_name: 'Operations test group',
-    backend_credential_set: true, credential_configured: true
+    inbound_target: 'backend', backend_credential_set: true, credential_configured: true
+  }, {
+    id: 2, route_key: 'it_manage', display_name: 'IT Management',
+    bot_account_id: 2, destination_id: 2, inbound_enabled: true, inbound_target: 'it_manage',
+    outbound_enabled: true, enabled: true, status: 'active', revision: 1,
+    path: '/api/v1/routes/it_manage/messages', bot_username: 'management_gateway_bot',
+    bot_account_name: 'Management gateway', destination_name: 'Management test group',
+    backend_credential_set: false, credential_configured: false
   }],
   gatewayMetrics: {
     route_key: 'incident_alerts', revision: 3,
@@ -227,7 +234,8 @@ const MOCK_DATA = {
   },
   gatewayHealth: {
     web_app: {status:'healthy'}, redis: {status:'healthy',persistence:'aof',depth:1,pending:0},
-    inbound_worker: {status:'healthy'}, outbound_worker: {status:'healthy'}
+    inbound_worker: {status:'healthy'}, outbound_worker: {status:'healthy'},
+    adapter: {status:'healthy'}, jenkins: {status:'healthy'}
   },
   gatewayWorkloads: [{
     id: 1, name: 'monitoring', status: 'active', revision: 2,
@@ -327,6 +335,17 @@ async function takeScreenshots() {
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
+
+  if (process.argv.includes('--gateway-only')) {
+    const page = await browser.newPage();
+    await page.setViewport(VIEWPORT);
+    await setupMockFetch(page, {authEnabled: true});
+    await page.evaluateOnNewDocument(() => localStorage.setItem('lang', 'en'));
+    await page.goto(BASE_URL, {waitUntil: 'networkidle0'});
+    await captureGateway(page);
+    await browser.close();
+    return;
+  }
 
   // ===== LOGIN SCREEN =====
   console.log('Taking login screenshot...');
@@ -452,14 +471,32 @@ async function takeScreenshots() {
   await page.evaluate(() => closeAPIKeysModal());
   await sleep(200);
 
-  // 13 - Business Routes (all identifiers and operational data are synthetic)
-  await page.evaluate(() => showBusinessRoutes());
-  await sleep(500);
-  await page.screenshot({ path: join(SCREENSHOTS_DIR, '13-business-routes.png') });
-  console.log('  13-business-routes.png');
+  await captureGateway(page);
 
   await browser.close();
   console.log('\nAll screenshots generated!');
+}
+
+async function captureGateway(page) {
+  await page.evaluate(() => showBusinessRoutes());
+  await sleep(500);
+  await page.screenshot({path: join(SCREENSHOTS_DIR, '13-business-routes.png')});
+  await page.evaluate(() => {
+    showBusinessRouteSetup();
+    document.getElementById('businessRouteTarget').value = 'it_manage';
+    document.getElementById('businessRouteKey').value = 'it_manage';
+    document.getElementById('businessRouteName').value = 'IT Management';
+    document.getElementById('businessRouteInbound').checked = true;
+    updateBusinessRouteTarget();
+    if (document.getElementById('businessRouteBackend').closest('.modal-field').style.display !== 'none') throw new Error('Adapter still asks for Backend URL');
+    if (!document.getElementById('businessRouteOutbound').checked) throw new Error('Adapter requires replies');
+  });
+  await sleep(500);
+  await page.screenshot({path: join(SCREENSHOTS_DIR, '14-embedded-adapter.png')});
+  await page.evaluate(() => { currentLang = 'ru'; applyLang(); });
+  const label = await page.$eval('#businessRouteTargetAdapter', node => node.textContent);
+  if (!label.includes('Встроенный')) throw new Error('Adapter Russian translation missing');
+  console.log('Gateway screenshots and EN/RU controls verified');
 }
 
 function sleep(ms) {

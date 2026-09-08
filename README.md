@@ -324,6 +324,19 @@ dedupe state, restore the last direct-poller offset, start exactly one old
 poller, and verify one Update plus one callback before restoring traffic. Never
 run old and Gateway polling owners concurrently for one token.
 
+### Embedded it_manage Adapter
+
+Business Routes can select **Embedded it_manage Adapter** to translate
+`/it_manage` messages into Management Request v1, trigger the existing Jenkins
+execution chain, and return acknowledgment and result in the original Telegram
+conversation. The Adapter shares the BotMux binary, image and deployment.
+
+Mount a JSON secret using `-adapter-config-file`, enable inbound/outbound on the
+Route, and choose `inbound_target: "it_manage"`. No Backend URL, Adapter port,
+Gateway-to-Adapter credential or new environment variable is required. The
+optional `docker-compose.adapter.yml` overlay only configures BotMux and Redis.
+See [configuration, contracts, recovery and testing](docs/embedded-adapter.md).
+
 ### Internationalization (i18n)
 - Interface available in **English** and **Russian**
 - Language toggle button in the sidebar header (EN/RU)

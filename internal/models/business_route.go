@@ -37,6 +37,7 @@ type BusinessRoute struct {
 	DisplayName             string             `json:"display_name"`
 	BotAccountID            int64              `json:"bot_account_id"`
 	DestinationID           int64              `json:"destination_id"`
+	InboundTarget           string             `json:"inbound_target"`
 	InboundEnabled          bool               `json:"inbound_enabled"`
 	InboundBackendURL       string             `json:"inbound_backend_url,omitempty"`
 	InboundBackendHealthURL string             `json:"inbound_backend_health_url,omitempty"`
@@ -61,6 +62,7 @@ type BusinessRoute struct {
 // GatewayRouteProbeTarget is private runtime material for component probes.
 // It must never be serialized, logged, or returned from an HTTP handler.
 type GatewayRouteProbeTarget struct {
+	InboundTarget    string `json:"-"`
 	Token            string `json:"-"`
 	ChatID           int64  `json:"-"`
 	BackendHealthURL string `json:"-"`

@@ -411,5 +411,9 @@
   "gateway_replay": "REPLAY",
   "gateway_discard": "DISCARD",
   "gateway_replay_confirm": "Replay this dead-letter delivery?",
-  "gateway_discard_confirm": "Discard this dead-letter delivery? This cannot be replayed later."
+  "gateway_discard_confirm": "Discard this dead-letter delivery? This cannot be replayed later.",
+  "gateway_inbound_target": "Inbound target",
+  "gateway_target_backend": "HTTP backend",
+  "gateway_target_adapter": "Embedded it_manage Adapter",
+  "gateway_target_prompt": "Inbound target: backend or it_manage"
 }

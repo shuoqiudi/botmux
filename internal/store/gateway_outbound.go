@@ -198,7 +198,7 @@ func (s *Store) AuthenticateGatewayWorkload(ctx context.Context, credentialHash 
 	var credentialID int64
 	err := s.db.QueryRowContext(ctx, `SELECT w.id,w.name,w.status,c.id
 		FROM gateway_workloads w JOIN gateway_workload_credentials c ON c.workload_id=w.id
-		WHERE c.credential_hash=? AND c.enabled=1 AND w.status='active'`, credentialHash).
+		WHERE c.credential_hash=? AND c.enabled=1 AND w.status='active' AND w.id>0`, credentialHash).
 		Scan(&workload.ID, &workload.Name, &workload.Status, &credentialID)
 	if err != nil {
 		return nil, err

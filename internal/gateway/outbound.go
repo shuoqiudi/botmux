@@ -83,6 +83,7 @@ type ReplyParameters struct {
 }
 
 type SendMessage struct {
+	MessageThreadID int64            `json:"message_thread_id,omitempty"`
 	Text            string           `json:"text"`
 	ParseMode       string           `json:"parse_mode,omitempty"`
 	ReplyMarkup     *ReplyMarkup     `json:"reply_markup,omitempty"`
@@ -426,6 +427,17 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 		}
 	}
 	target, err := s.repo.ResolveGatewayOutboundTarget(ctx, delivery.RouteID)
+	if resolver, ok := s.repo.(interface {
+		ResolveAdapterReplyTarget(context.Context, string) (*models.GatewayOutboundTarget, error)
+	}); ok {
+		pinned, pinErr := resolver.ResolveAdapterReplyTarget(ctx, delivery.ID)
+		if pinErr != nil {
+			return
+		}
+		if pinned != nil {
+			target, err = pinned, nil
+		}
+	}
 	if err != nil || !target.Enabled || !target.Outbound {
 		s.deadLetter(ctx, queued, delivery, "", "route_disabled", delivery.AttemptCount)
 		return

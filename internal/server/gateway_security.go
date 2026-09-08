@@ -28,6 +28,10 @@ func gatewaySecurityID(path string) (int64, string) {
 
 func (s *Server) handleGatewayWorkloads(w http.ResponseWriter, r *http.Request) {
 	id, action := gatewaySecurityID(r.URL.Path)
+	if id < 0 {
+		writeBusinessError(w, 404, "not_found", sql.ErrNoRows)
+		return
+	}
 	if id == 0 && r.Method == http.MethodGet {
 		items, err := s.store.GetGatewayWorkloadsAdmin()
 		if err != nil {

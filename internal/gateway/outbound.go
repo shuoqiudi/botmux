@@ -90,6 +90,14 @@ type SendMessage struct {
 	ReplyParameters *ReplyParameters `json:"reply_parameters,omitempty"`
 }
 
+type SendDocument struct {
+	Filename        string           `json:"filename"`
+	Content         string           `json:"content"`
+	Caption         string           `json:"caption"`
+	MessageThreadID int64            `json:"message_thread_id,omitempty"`
+	ReplyParameters *ReplyParameters `json:"reply_parameters,omitempty"`
+}
+
 type AnswerCallback struct {
 	CallbackQueryID string `json:"callback_query_id"`
 	Text            string `json:"text,omitempty"`
@@ -98,6 +106,7 @@ type AnswerCallback struct {
 
 type outboundEnvelope struct {
 	Kind     string          `json:"kind"`
+	Document *SendDocument   `json:"document,omitempty"`
 	Message  *SendMessage    `json:"message,omitempty"`
 	Callback *AnswerCallback `json:"callback,omitempty"`
 }
@@ -469,6 +478,17 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 		}
 		var sent int64
 		sent, err = s.telegram.SendMessage(ctx, target.Token, target.ChatID, *envelope.Message)
+		messageID = &sent
+	case "document":
+		sender, ok := s.telegram.(interface {
+			SendDocument(context.Context, string, int64, SendDocument) (int64, error)
+		})
+		if !ok || envelope.Document == nil {
+			err = ErrInvalidPayload
+			break
+		}
+		var sent int64
+		sent, err = sender.SendDocument(ctx, target.Token, target.ChatID, *envelope.Document)
 		messageID = &sent
 	case "callback":
 		if envelope.Callback == nil {

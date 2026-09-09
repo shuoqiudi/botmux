@@ -94,9 +94,10 @@ The normal flow sends an acknowledgment through the durable outbound queue,
 waits for Telegram to confirm delivery, and only then triggers Jenkins. After
 completion, the Adapter reads the bounded console response for a matching
 `IT_MANAGE_MANAGEMENT_RESULT_BEGIN:<base64-json>:IT_MANAGE_MANAGEMENT_RESULT_END`
-line. Schema, both identities, status and code must match v1. Console text,
-free-form result details and external URLs are never forwarded or retained.
-Telegram receives a fixed success/failure summary, safe code and request ID.
+line. Schema, both identities, status and code must match v1. Console logs,
+free-form result details and infrastructure URLs are never forwarded or retained.
+Telegram receives the status, safe code and request ID plus the optional CLI-rendered
+Command Output as an HTML code block or full UTF-8 text attachment.
 Replies retain the original Bot identity, Chat and topic even if the Business
 Route destination changes while Jenkins is running.
 
@@ -120,6 +121,7 @@ retained across restarts; deleting them discards deduplication history.
 | Queue / build exceeds configured deadline | `JENKINS_QUEUE_TIMEOUT` / `JENKINS_BUILD_TIMEOUT` |
 | Failed build without valid business result | `JENKINS_BUILD_FAILED` |
 | Missing, invalid or mismatched result | `RESULT_UNAVAILABLE` |
+| Jenkins console exceeds the bounded reader | `RESULT_LIMIT_EXCEEDED` |
 | Consecutive temporary network failures exhausted | `JENKINS_UNAVAILABLE` |
 | Job URL changed during recovery | `ADAPTER_CONFIG_CHANGED` |
 | Acknowledgment / final reply cannot be delivered | `adapter_ack_failed` / `adapter_reply_failed` |
@@ -162,3 +164,9 @@ pinning, bounded failures, ignored messages, secret configuration and health.
 No real business execution or Telegram production message is required.
 
 See the [delivery verification and independent review](embedded-adapter-validation.md) for the completed checks.
+
+## Command Output
+
+Terminal replies consume optional Management Result `command_output` and select
+escaped HTML code blocks or full UTF-8 text attachments. See the
+[protocol, capacity, persistence and tests](gateway-command-output.md).

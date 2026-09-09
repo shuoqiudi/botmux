@@ -12,6 +12,11 @@ import (
 	"github.com/skrashevich/botmux/internal/models"
 )
 
+type storedAdapterExecution struct {
+	*models.AdapterExecution
+	ReplyPayload json.RawMessage `json:"reply_payload,omitempty"`
+}
+
 func (s *Store) migrateAdapter() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS gateway_adapter_executions (
         delivery_id TEXT PRIMARY KEY REFERENCES gateway_inbound_deliveries(delivery_id),
@@ -57,17 +62,30 @@ func (s *Store) ClaimAdapterExecution(ctx context.Context, id, owner, fingerprin
 	if err := tx.QueryRowContext(ctx, `SELECT state_json,job_fingerprint FROM gateway_adapter_executions WHERE delivery_id=?`, id).Scan(&encoded, &state.JobFingerprint); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal([]byte(encoded), &state); err != nil {
+	stored := storedAdapterExecution{AdapterExecution: &state}
+	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
 		return nil, err
+	}
+	// Pre-output versions persisted the result reply only in the outbound table.
+	// Preserve those exact bytes on upgrade instead of generating a new payload
+	// for an already-enqueued (possibly already-sent) phase.
+	if state.Stage == "terminal" && len(stored.ReplyPayload) == 0 {
+		err := tx.QueryRowContext(ctx, `SELECT p.payload_json FROM gateway_adapter_replies r
+            JOIN gateway_delivery_payloads p ON p.delivery_id=r.delivery_id
+            WHERE r.inbound_id=? AND r.phase='result'`, id).Scan(&stored.ReplyPayload)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	state.ReplyPayload = stored.ReplyPayload
 	return &state, nil
 }
 
 func (s *Store) SaveAdapterExecution(ctx context.Context, state *models.AdapterExecution, owner string, release bool) error {
-	raw, err := json.Marshal(state)
+	raw, err := json.Marshal(storedAdapterExecution{AdapterExecution: state, ReplyPayload: state.ReplyPayload})
 	if err != nil {
 		return err
 	}

@@ -27,6 +27,7 @@ type adapterJenkins struct {
 	mu             sync.Mutex
 	server         *httptest.Server
 	mode           string
+	output         any
 	triggerStarted chan struct{}
 	triggers       int
 	queueReads     int
@@ -121,11 +122,21 @@ func newAdapterJenkins(t *testing.T, mode string) *adapterJenkins {
 			if j.mode == "business_failed" {
 				status, code = "business_failed", "BUSINESS_FAILED"
 			}
+			if j.mode == "result_failed" {
+				status, code = "failed", "RESULT_UNAVAILABLE"
+			}
+			if j.mode == "business_timeout" {
+				status, code = "timeout", "BUSINESS_TIMEOUT"
+			}
 			id := identity["request_id"]
 			if j.mode == "wrong_identity" {
 				id = "some-other-request"
 			}
-			raw, _ := json.Marshal(map[string]any{"schema": "it_manage.management-result/v1", "request_id": id, "delivery_id": identity["delivery_id"], "status": status, "code": code, "detail": "Authorization: Basic secret; password=jenkins-secret", "execution": map[string]any{"execution_id": "malicious secret"}})
+			result := map[string]any{"schema": "it_manage.management-result/v1", "request_id": id, "delivery_id": identity["delivery_id"], "status": status, "code": code, "detail": "Authorization: Basic secret; password=jenkins-secret", "execution": map[string]any{"execution_id": "malicious secret"}}
+			if j.output != nil {
+				result["command_output"] = j.output
+			}
+			raw, _ := json.Marshal(result)
 			fmt.Fprintf(w, "IT_MANAGE_MANAGEMENT_RESULT_BEGIN:%s:IT_MANAGE_MANAGEMENT_RESULT_END\n", base64.StdEncoding.EncodeToString(raw))
 		default:
 			w.WriteHeader(404)
@@ -138,19 +149,20 @@ func (j *adapterJenkins) setMode(mode string) { j.mu.Lock(); j.mode = mode; j.mu
 func (j *adapterJenkins) triggerCount() int   { j.mu.Lock(); defer j.mu.Unlock(); return j.triggers }
 
 type adapterHarness struct {
-	t        *testing.T
-	path     string
-	store    *store.Store
-	fake     *fakeTG
-	jenkins  *adapterJenkins
-	redis    *redis.Client
-	queue    *gateway.RedisInboundQueue
-	outbound *gateway.Service
-	inbound  *gateway.Inbound
-	config   gateway.AdapterConfig
-	cancel   context.CancelFunc
-	done     chan error
-	botID    int64
+	t             *testing.T
+	path          string
+	store         *store.Store
+	fake          *fakeTG
+	jenkins       *adapterJenkins
+	redis         *redis.Client
+	queue         *gateway.RedisInboundQueue
+	outbound      *gateway.Service
+	outboundQueue gateway.OutboundQueue
+	inbound       *gateway.Inbound
+	config        gateway.AdapterConfig
+	cancel        context.CancelFunc
+	done          chan error
+	botID         int64
 }
 
 func newAdapterHarness(t *testing.T, mode string) *adapterHarness {
@@ -191,7 +203,11 @@ func newAdapterHarness(t *testing.T, mode string) *adapterHarness {
 func (h *adapterHarness) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
-	h.outbound = gateway.NewService(h.store, newMemoryOutboundQueue(), gateway.NewTelegramHTTPClient(h.fake.URL()), "")
+	queue := h.outboundQueue
+	if queue == nil {
+		queue = newMemoryOutboundQueue()
+	}
+	h.outbound = gateway.NewService(h.store, queue, gateway.NewTelegramHTTPClient(h.fake.URL()), "")
 	h.outbound.Start(ctx)
 	adapter, err := gateway.NewAdapter(h.store, h.outbound, h.config, nil)
 	if err != nil {

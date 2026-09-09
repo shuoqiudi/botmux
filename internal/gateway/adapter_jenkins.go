@@ -16,6 +16,7 @@ import (
 )
 
 var errJenkinsUnavailable = errors.New("jenkins_unavailable")
+var errResultTooLarge = errors.New("result_limit_exceeded")
 var errResultUnavailable = errors.New("result_unavailable")
 var jenkinsJobPath = regexp.MustCompile(`^(?:/[A-Za-z0-9_.-]+)*/job/[A-Za-z0-9_.-]+(?:/job/[A-Za-z0-9_.-]+)*$`)
 var jenkinsConsoleTimestamp = regexp.MustCompile(`^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\] `)
@@ -68,7 +69,10 @@ func (j *jenkinsClient) call(ctx context.Context, method, endpoint string, form 
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if err != nil || int64(len(raw)) > limit {
+	if int64(len(raw)) > limit {
+		return resp.StatusCode, resp.Header, nil, errResultTooLarge
+	}
+	if err != nil {
 		return resp.StatusCode, resp.Header, nil, errJenkinsUnavailable
 	}
 	return resp.StatusCode, resp.Header, raw, nil
@@ -230,14 +234,17 @@ func (j *jenkinsClient) build(ctx context.Context, number int64) (bool, string, 
 	return *build.Building, build.Result, nil
 }
 
-func (j *jenkinsClient) result(ctx context.Context, number int64, id string) (string, string, error) {
-	status, _, raw, err := j.call(ctx, http.MethodGet, fmt.Sprintf("%s/%d/consoleText", j.jobURL, number), nil, 4<<20)
+func (j *jenkinsClient) result(ctx context.Context, number int64, id string) (*managementResult, error) {
+	status, _, raw, err := j.call(ctx, http.MethodGet, fmt.Sprintf("%s/%d/consoleText", j.jobURL, number), nil, 8<<20)
 	if err != nil || status != 200 {
-		return "", "", errJenkinsUnavailable
+		if errors.Is(err, errResultTooLarge) {
+			return nil, err
+		}
+		return nil, errJenkinsUnavailable
 	}
 	const begin = "IT_MANAGE_MANAGEMENT_RESULT_BEGIN:"
 	const end = ":IT_MANAGE_MANAGEMENT_RESULT_END"
-	var foundStatus, foundCode string
+	var found *managementResult
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		// Jenkins Timestamper decorates consoleText lines. Strip only its
@@ -247,13 +254,7 @@ func (j *jenkinsClient) result(ctx context.Context, number int64, id string) (st
 			continue
 		}
 		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(strings.TrimPrefix(line, begin), end))
-		var result struct {
-			Schema     string `json:"schema"`
-			RequestID  string `json:"request_id"`
-			DeliveryID string `json:"delivery_id"`
-			Status     string `json:"status"`
-			Code       string `json:"code"`
-		}
+		var result managementResult
 		if err != nil || json.Unmarshal(decoded, &result) != nil || result.Schema != managementResultSchema || result.RequestID != id || result.DeliveryID != id {
 			continue
 		}
@@ -269,11 +270,11 @@ func (j *jenkinsClient) result(ctx context.Context, number int64, id string) (st
 			valid = result.Code == "RESULT_UNAVAILABLE" || result.Code == "JENKINS_BUILD_FAILED" || result.Code == "JENKINS_TRIGGER_FAILED"
 		}
 		if valid {
-			foundStatus, foundCode = result.Status, result.Code
+			found = &result
 		}
 	}
-	if foundStatus == "" {
-		return "", "", errResultUnavailable
+	if found == nil {
+		return nil, errResultUnavailable
 	}
-	return foundStatus, foundCode, nil
+	return found, nil
 }

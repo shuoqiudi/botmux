@@ -1,0 +1,25 @@
+{
+  "schema": "it_manage.management-result/v1",
+  "request_id": "sample-1253",
+  "delivery_id": "sample-1253",
+  "status": "timeout",
+  "code": "BUSINESS_TIMEOUT",
+  "detail": "",
+  "jenkins": {
+    "queue_url": "",
+    "build_url": "",
+    "build_number": "",
+    "result": ""
+  },
+  "execution": {
+    "execution_id": "d4ec1e87-812a-5bb4-8a09-f329dd8653c1",
+    "terminal_status": "timeout"
+  },
+  "command_output": {
+    "format": "text/plain",
+    "encoding": "utf-8",
+    "text": "部分记录  TXT  value\n",
+    "state": "partial",
+    "reason": "execution_timeout"
+  }
+}

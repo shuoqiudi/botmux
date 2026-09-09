@@ -192,10 +192,12 @@ func (a *Adapter) Process(ctx context.Context, d *models.InboundDelivery) (done 
 			a.advance(state, "result")
 		}
 	case "result":
-		status, code, err := a.jenkins.result(ctx, state.BuildNumber, d.DeliveryID)
+		result, err := a.jenkins.result(ctx, state.BuildNumber, d.DeliveryID)
 		if err != nil {
-			if errors.Is(err, errResultUnavailable) {
-				code = "RESULT_UNAVAILABLE"
+			if errors.Is(err, errResultTooLarge) {
+				a.terminal(state, "failed", "RESULT_LIMIT_EXCEEDED")
+			} else if errors.Is(err, errResultUnavailable) {
+				code := "RESULT_UNAVAILABLE"
 				if state.BuildResult != "SUCCESS" {
 					code = "JENKINS_BUILD_FAILED"
 				}
@@ -205,14 +207,19 @@ func (a *Adapter) Process(ctx context.Context, d *models.InboundDelivery) (done 
 			}
 			break
 		}
-		a.terminal(state, status, code)
-	case "terminal":
-		text := "Request " + state.ResultStatus + "."
-		if state.ResultCode != "" {
-			text += " Code: " + state.ResultCode + "."
+		a.terminal(state, result.Status, result.Code)
+		state.ReplyPayload, err = json.Marshal(resultReply(state, message, result))
+		if err != nil {
+			return false, "", err
 		}
-		text += " Request: " + d.DeliveryID
-		ready, failed, err := a.reply(ctx, d, message, "result", text)
+	case "terminal":
+		if len(state.ReplyPayload) == 0 {
+			state.ReplyPayload, err = json.Marshal(resultReply(state, message, nil))
+			if err != nil {
+				return false, "", err
+			}
+		}
+		ready, failed, err := a.queueReply(ctx, d, "result", state.ReplyPayload)
 		if err != nil {
 			return false, "", err
 		}
@@ -259,6 +266,10 @@ func (a *Adapter) reply(ctx context.Context, d *models.InboundDelivery, message 
 		send.ReplyParameters = &ReplyParameters{MessageID: message.MessageID, AllowSendingWithoutReply: true}
 	}
 	raw, _ := json.Marshal(outboundEnvelope{Kind: "message", Message: send})
+	return a.queueReply(ctx, d, phase, raw)
+}
+
+func (a *Adapter) queueReply(ctx context.Context, d *models.InboundDelivery, phase string, raw []byte) (bool, bool, error) {
 	reply, err := a.store.CreateAdapterReply(ctx, d.DeliveryID, phase, raw)
 	if err != nil {
 		return false, false, err

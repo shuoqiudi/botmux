@@ -10,3 +10,4 @@ botmux
 docs/node_modules
 docs/package-lock.json
 /secrets/
+__pycache__/

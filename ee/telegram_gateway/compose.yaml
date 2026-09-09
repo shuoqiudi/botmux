@@ -1,0 +1,38 @@
+name: it-manage-telegram-gateway-dev
+
+services:
+  telegram_gateway:
+    container_name: it-manage-telegram-gateway-dev
+    image: it_manage_telegram_gateway:dev
+    ports:
+      - "127.0.0.1:18081:8080"
+    volumes:
+      - telegram_gateway_data:/data
+    secrets:
+      - source: telegram_bot_token
+        target: telegram_bot_token
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  telegram_gateway_data:
+
+secrets:
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token

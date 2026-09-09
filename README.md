@@ -1,5 +1,11 @@
 # Telegram Gateway — it_telegram
 
+Maintained Gateway build, deployment and validation: [delivery guide](ee/telegram_gateway/README.md).
+The root Dockerfile includes the hardened secret-file and privilege-drop wrapper;
+use `ee/telegram_gateway/build.sh`, `smoke.sh` and `test.sh` from a clean checkout.
+Live validation follows the [Ephemeral Gateway Test Instance runbook](docs/gateway-acceptance.md).
+
+
 <p align="center">
 
 

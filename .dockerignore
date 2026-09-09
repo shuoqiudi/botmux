@@ -12,3 +12,8 @@ README.md
 LICENSE
 Dockerfile
 .dockerignore
+**/secrets/
+**/__pycache__/
+secrets/
+.env
+*.gateway-key

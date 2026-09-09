@@ -46,7 +46,14 @@ def main() -> None:
             time.sleep(1)
         raise AssertionError("packaged Gateway did not become healthy")
 
+    temporary = tempfile.TemporaryDirectory()
     try:
+        secrets = Path(temporary.name) / "secrets"
+        secrets.mkdir()
+        for filename, contents in (("telegram_bot_token", token), ("adapter_config", adapter)):
+            path = secrets / filename
+            path.write_text(contents + "\n")
+            path.chmod(0o600)
         docker("run", "-d", "--name", fixture, "--network", "container:" + redis_name,
                "--env", "GOMAXPROCS=2", test_image, "go", "run", "./tests/packaging/fixture")
         for _ in range(60):
@@ -62,17 +69,10 @@ def main() -> None:
                "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=32m",
                "--cap-drop", "ALL", "--cap-add", "DAC_OVERRIDE", "--cap-add", "SETGID",
                "--cap-add", "SETUID", "--security-opt", "no-new-privileges:true",
+               "--mount", "type=bind,src=" + str(secrets) + ",dst=/run/secrets,readonly",
                "--volume", volume + ":/data", runtime_image,
                "-addr", ":8080", "-db", "/data/botdata.db", "-redis-addr", "127.0.0.1:6379",
                "-tg-api", "http://127.0.0.1:18080")
-        with tempfile.TemporaryDirectory() as directory:
-            secrets = Path(directory) / "secrets"
-            secrets.mkdir()
-            for filename, contents in (("telegram_bot_token", token), ("adapter_config", adapter)):
-                path = secrets / filename
-                path.write_text(contents + "\n")
-                path.chmod(0o600)
-            docker("cp", str(secrets), name + ":/run/secrets")
         docker("start", name)
         healthy()
         assert request("/api/auth/me")[0] == 401
@@ -114,6 +114,7 @@ done
         for container in (name, fixture):
             subprocess.run(["docker", "rm", "-fv", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["docker", "volume", "rm", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        temporary.cleanup()
 
 
 if __name__ == "__main__":

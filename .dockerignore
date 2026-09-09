@@ -12,5 +12,8 @@ README.md
 LICENSE
 Dockerfile
 .dockerignore
-ee/telegram_gateway/secrets/
+**/secrets/
 **/__pycache__/
+secrets/
+.env
+*.gateway-key

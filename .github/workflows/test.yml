@@ -11,26 +11,11 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-
-      - name: Enable Redis AOF
-        run: docker exec "${{ job.services.redis.id }}" redis-cli CONFIG SET appendonly yes
-
-      - run: go build ./...
-
-      - run: go test -v ./...
+          fetch-depth: 0
+      - name: Serial Gateway packaging, runtime and Go tests
+        run: ee/telegram_gateway/test.sh
+      - name: Preserved interface smoke
+        run: ee/telegram_gateway/smoke.sh

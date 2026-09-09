@@ -8,7 +8,7 @@ Telegram Gateway is maintained here as an independent application based on BotMu
 2. Clone your fork: `git clone https://github.com/<YOUR_USERNAME>/it_telegram.git`
 3. Create a feature branch: `git checkout -b my-feature`
 4. Make your changes
-5. Build and test: `go build -o botmux . && go test -v ./...`
+5. Build and test: `go build -o botmux . && go test -p 1 -parallel 1 ./...`
 6. Commit your changes with a descriptive message
 7. Push to your fork and open a Pull Request
 
@@ -22,7 +22,7 @@ go build -o botmux .
 ./botmux -demo
 
 # Run tests
-go test -v ./...
+go test -p 1 -parallel 1 ./...
 ```
 
 ## Project Structure
@@ -55,3 +55,12 @@ This is a monolithic Go application — all source files are in `package main`. 
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+
+## Gateway delivery checks
+
+Use `ee/telegram_gateway/test.sh` after committing a candidate. It builds from
+this checkout, runs packaging and process checks with synthetic credentials,
+then runs the Go suite serially with isolated Redis/AOF. `smoke.sh` retains the
+four original public-interface stages. Python 3 (standard library), Git, Docker,
+Compose, curl and flock are required; a host Go installation is optional.
+See [migration provenance and validation](docs/gateway-packaging-validation.md).

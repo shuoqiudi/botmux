@@ -1,0 +1,50 @@
+name: it-manage-telegram-gateway-acceptance
+
+services:
+  telegram_gateway:
+    image: it_manage_telegram_gateway:dev
+    command: ["-addr", ":8080", "-db", "/data/botdata.db", "-redis-addr", "redis:6379"]
+    ports:
+      - "127.0.0.1::8080"
+    volumes:
+      - gateway_data:/data
+    secrets:
+      - telegram_bot_token
+      - adapter_config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
+    volumes:
+      - redis_data:/data
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  gateway_data:
+  redis_data:
+
+secrets:
+  telegram_bot_token:
+    file: ./secrets/telegram_bot_token
+  adapter_config:
+    file: ./secrets/adapter.json

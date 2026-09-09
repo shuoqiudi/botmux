@@ -1,3 +1,5 @@
+# Telegram Gateway — it_telegram
+
 <p align="center">
 
 
@@ -6,18 +8,22 @@
 
 
 <!-- badges:start -->
-[![GitHub stars](https://img.shields.io/github/stars/skrashevich/botmux?style=flat-square)](https://github.com/skrashevich/botmux/stargazers)
-[![Last commit](https://img.shields.io/github/last-commit/skrashevich/botmux?style=flat-square)](https://github.com/skrashevich/botmux/commits/main)
-[![License](https://img.shields.io/github/license/skrashevich/botmux?style=flat-square)](https://github.com/skrashevich/botmux/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/shuoqiudi/it_telegram?style=flat-square)](https://github.com/shuoqiudi/it_telegram/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/shuoqiudi/it_telegram?style=flat-square)](https://github.com/shuoqiudi/it_telegram/commits/main)
+[![License](https://img.shields.io/github/license/shuoqiudi/it_telegram?style=flat-square)](https://github.com/shuoqiudi/it_telegram/blob/main/LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://pkg.go.dev/github.com/skrashevich/botmux)
 [![Release](https://img.shields.io/github/v/release/skrashevich/botmux?color=blue)](https://github.com/skrashevich/botmux/releases/latest)
-[![Build](https://img.shields.io/github/actions/workflow/status/skrashevich/botmux/test.yml?label=tests&logo=github)](https://github.com/skrashevich/botmux/actions/workflows/test.yml)
-[![Docker](https://img.shields.io/github/actions/workflow/status/skrashevich/botmux/docker.yml?label=docker&logo=docker)](https://github.com/skrashevich/botmux/actions/workflows/docker.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/shuoqiudi/it_telegram/test.yml?label=tests&logo=github)](https://github.com/shuoqiudi/it_telegram/actions/workflows/test.yml)
+[![Docker](https://img.shields.io/github/actions/workflow/status/shuoqiudi/it_telegram/docker.yml?label=docker&logo=docker)](https://github.com/shuoqiudi/it_telegram/actions/workflows/docker.yml)
 [![Docs](https://img.shields.io/badge/docs-mintlify-blue?logo=readthedocs&logoColor=white)](https://botmux.mintlify.app/)
 <!-- badges:end -->
 
 
-> **[Documentation](https://botmux.mintlify.app/)** — full setup guide, API reference, and architecture overview.
+Telegram Gateway is maintained in [shuoqiudi/it_telegram](https://github.com/shuoqiudi/it_telegram), renamed directly from `shuoqiudi/botmux` with its history and issues preserved. It is based on [BotMux by skrashevich](https://github.com/skrashevich/botmux) and retains the [Apache-2.0 license](LICENSE).
+
+Start with the [Gateway adapter guide](docs/embedded-adapter.md), [repository rename verification](docs/repository-rename.md), and [contribution guide](CONTRIBUTING.md). The [local documentation](docs/en/index.mdx) covers the inherited BotMux features; [hosted BotMux documentation](https://botmux.mintlify.app/) and the release badge above refer to upstream.
+
+Develop in a standalone `it_telegram` checkout beside `it_manage`, `it_caddy`, and `it_monitor`. Gateway packaging and deployment currently remain in `it_manage/ee/telegram_gateway`; its `submodule/telegram_gateway` gitlink remains in place until a separate delivery migration. Repository naming does not change runtime names or deployment targets.
 
 Web-based command center for managing Telegram groups and channels via Bot API, with built-in reverse proxy for legacy webhook bots.
 
@@ -364,15 +370,15 @@ See [configuration, contracts, recovery and testing](docs/embedded-adapter.md).
 ## Installation
 
 ```bash
-git clone https://github.com/skrashevich/botmux.git
-cd botmux
+git clone https://github.com/shuoqiudi/it_telegram.git
+cd it_telegram
 go build -o botmux .
 ```
 
-Or install directly:
+The Go module remains `github.com/skrashevich/botmux` for compatibility. To install this checkout:
 
 ```bash
-go install github.com/skrashevich/botmux@latest
+go install .
 ```
 
 ### Docker
@@ -581,7 +587,7 @@ The **API Proxy URL** is displayed in the bot detail view when proxy mode is ena
 ## Architecture
 
 ```
-botmux/
+it_telegram/
 ├── main.go                 Entry point, flag parsing, wiring
 ├── demo.go                 Demo mode seeding
 ├── internal/

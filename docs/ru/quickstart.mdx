@@ -15,8 +15,10 @@ description: "Запустите BotMux менее чем за 5 минут"
 
 <CodeGroup>
 ```bash Binary
-go install github.com/skrashevich/botmux@latest
-botmux -token "YOUR_TOKEN"
+git clone https://github.com/shuoqiudi/it_telegram.git
+cd it_telegram
+go build -o botmux .
+./botmux -token "YOUR_TOKEN"
 ```
 
 ```bash Docker

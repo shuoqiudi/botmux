@@ -28,7 +28,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - run: redis-cli CONFIG SET appendonly yes
+      - name: Enable Redis AOF
+        run: docker exec "${{ job.services.redis.id }}" redis-cli CONFIG SET appendonly yes
 
       - run: go build ./...
 

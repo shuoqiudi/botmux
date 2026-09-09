@@ -101,3 +101,24 @@ The pre-migration packaging remains available in it_manage at
 Its fixed Dockerfile can rebuild the old image. No gitlink or old entrypoint is
 removed by #6. Follow-up cleanup must pin the independently validated delivery
 commit/image recorded in the migration report before deleting those assets.
+
+## Upgrading a volume created by the former native image
+
+The accepted it_manage wrapper already ran as `telegram-gateway`; its volumes
+retain the same identity. The former **root Dockerfile in this repository**, however,
+ran as root. Before switching such an existing native volume to this hardened
+image, stop its owner and make a consistent protected backup of SQLite, its
+`botdata.db.gateway-key` and associated Redis state. Migrate ownership offline:
+
+```bash
+# Replace the volume and image with the actual stopped volume and fixed candidate.
+docker run --rm --user root --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE \
+  --volume EXISTING_GATEWAY_VOLUME:/data --entrypoint chown \
+  it_manage_telegram_gateway:FULL_SOURCE_SHA -R telegram-gateway:telegram-gateway /data
+```
+
+This explicitly changes ownership of the chosen volume. Do not point it at an
+unrelated data directory. The running Gateway still receives no CHOWN capability.
+Start one owner, verify authentication and configuration persistence, and retain
+the backup for rollback. New named volumes are initialized with the correct
+image-directory ownership and need no migration.

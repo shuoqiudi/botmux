@@ -93,14 +93,23 @@ for secret in telegram_bot_token adapter_config; do
     cmp /run/secrets/$secret /tmp/$secret
 done
 ''')
-        key_before = docker("exec", name, "sha256sum", "/data/.gateway-key")
-        docker("restart", name)
+        key_before = docker("exec", name, "sha256sum", "/data/botdata.db.gateway-key")
+        docker("stop", name)
+        # Model a populated volume created by the former root-running native image.
+        # Exercise the documented offline migration without granting CHOWN to Gateway.
+        for owner in ("root:root", "telegram-gateway:telegram-gateway"):
+            docker("run", "--rm", "--user", "root", "--cap-drop", "ALL",
+                   "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+                   "--volume", volume + ":/data", "--entrypoint", "chown",
+                   runtime_image, "-R", owner, "/data")
+        docker("start", name)
         healthy()
         assert request("/api/auth/me", cookie=cookie)[0] == 200
-        assert key_before == docker("exec", name, "sha256sum", "/data/.gateway-key")
-        logs = docker("logs", name)
+        assert key_before == docker("exec", name, "sha256sum", "/data/botdata.db.gateway-key")
+        result = subprocess.run(["docker", "logs", name], check=True, capture_output=True, text=True)
+        logs = result.stdout + result.stderr
         assert token not in logs and "synthetic-jenkins-secret" not in logs
-        print("PASS packaged secrets, privilege drop, health, authentication and SQLite/key restart")
+        print("PASS packaged secrets, privilege drop, health, authentication, SQLite/key restart and native-volume migration")
     finally:
         for container in (name, fixture):
             subprocess.run(["docker", "rm", "-fv", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

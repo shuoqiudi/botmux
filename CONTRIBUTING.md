@@ -1,11 +1,11 @@
-# Contributing to BotMux
+# Contributing to Telegram Gateway (it_telegram)
 
-Thank you for your interest in contributing to BotMux!
+Telegram Gateway is maintained here as an independent application based on BotMux. See [repository identity and verification](docs/repository-rename.md).
 
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/<YOU USERNAME>>/botmux.git`
+2. Clone your fork: `git clone https://github.com/<YOUR_USERNAME>/it_telegram.git`
 3. Create a feature branch: `git checkout -b my-feature`
 4. Make your changes
 5. Build and test: `go build -o botmux . && go test -v ./...`
@@ -43,7 +43,7 @@ This is a monolithic Go application — all source files are in `package main`. 
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/skrashevich/botmux/issues) for bug reports and feature requests.
+- Use [GitHub Issues](https://github.com/shuoqiudi/it_telegram/issues) for bug reports and feature requests.
 - Include steps to reproduce, expected vs actual behavior, and your environment (OS, Go version, Docker).
 
 ## Code Style

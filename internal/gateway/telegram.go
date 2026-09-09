@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptrace"
+	"net/textproto"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 type TelegramFailureOutcome string
@@ -66,6 +70,10 @@ func (c *TelegramHTTPClient) call(ctx context.Context, token, method string, pay
 	if err != nil {
 		return err
 	}
+	return c.callBody(ctx, token, method, body, "application/json", result)
+}
+
+func (c *TelegramHTTPClient) callBody(ctx context.Context, token, method string, body []byte, contentType string, result any) error {
 	endpoint := c.baseURL + "/bot" + url.PathEscape(token) + "/" + method
 	var wroteRequest atomic.Bool
 	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { wroteRequest.Store(true) }}
@@ -73,7 +81,7 @@ func (c *TelegramHTTPClient) call(ctx context.Context, token, method string, pay
 	if err != nil {
 		return &TelegramError{Class: "telegram_request_invalid", Outcome: TelegramPermanent}
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		outcome := TelegramDefiniteTransient
@@ -177,4 +185,53 @@ func (c *TelegramHTTPClient) ProbeDestination(ctx context.Context, token string,
 		return &TelegramError{Class: "telegram_rejected", Outcome: TelegramPermanent, WriteObserved: true}
 	}
 	return nil
+}
+
+// Documents use the same request tracing and failure classification as messages.
+// Content is durable text, never a URL, Telegram file ID or local temporary path.
+func (c *TelegramHTTPClient) SendDocument(ctx context.Context, token string, chatID int64, document SendDocument) (int64, error) {
+	if len(document.Content) == 0 || len(document.Content) > commandOutputLimit || !utf8.ValidString(document.Content) || telegramTextLength(document.Caption) > 1024 || !strings.HasSuffix(document.Filename, ".txt") || strings.ContainsAny(document.Filename, "\\/\r\n\"") {
+		return 0, ErrInvalidPayload
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	fields := map[string]string{"chat_id": strconv.FormatInt(chatID, 10), "caption": document.Caption}
+	if document.MessageThreadID != 0 {
+		fields["message_thread_id"] = strconv.FormatInt(document.MessageThreadID, 10)
+	}
+	if document.ReplyParameters != nil {
+		raw, err := json.Marshal(document.ReplyParameters)
+		if err != nil {
+			return 0, err
+		}
+		fields["reply_parameters"] = string(raw)
+	}
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return 0, err
+		}
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="document"; filename="`+document.Filename+`"`)
+	header.Set("Content-Type", "text/plain; charset=utf-8")
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return 0, err
+	}
+	if _, err = io.WriteString(part, document.Content); err != nil {
+		return 0, err
+	}
+	if err = writer.Close(); err != nil {
+		return 0, err
+	}
+	var result struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err = c.callBody(ctx, token, "sendDocument", body.Bytes(), writer.FormDataContentType(), &result); err != nil {
+		return 0, err
+	}
+	if result.MessageID == 0 {
+		return 0, &TelegramError{Class: "telegram_response_ambiguous", Outcome: TelegramAmbiguous, WriteObserved: true}
+	}
+	return result.MessageID, nil
 }

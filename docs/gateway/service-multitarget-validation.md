@@ -31,7 +31,7 @@ Screenshots: [English/dark](../../screenshots/service-subscriptions-en-dark.png)
 
 ## Validation status
 
-Focused multi-target and existing subscription HTTP tests passed, including the isolated AOF recovery cases. Browser acceptance passed. The implementation candidate is `a318dbb`; the complete packaging/regression run uses a clean detached checkout of that commit.
+Focused multi-target and existing subscription HTTP tests passed, including the isolated AOF recovery cases. Browser acceptance passed. The initial implementation candidate was `a318dbb`. Final validated implementation: `844aed646d468581a9c813e4acdbdcb99e6897a5`, tested from a clean detached checkout.
 
 ### Standards review
 
@@ -39,6 +39,20 @@ No hard violations of AGENTS.md or CONTRIBUTING.md. One nonblocking, low-priorit
 
 ### Spec review
 
-No actionable findings against #15 and parent #12. The review covered complete durable plans, immutable snapshots, independent outcomes, persistent physical-Bot limits, administrator target visibility, producer privacy, and authorized/audited per-target operations. The first full run found that ordinary retry exhaustion unnecessarily invoked the backoff callback. The worker now computes backoff only when another attempt is allowed, while final-attempt 429 still persists Telegram’s Retry-After. Both review axes rechecked this correction with no new findings. The focused legacy fault-lifecycle and final-429 regression tests passed; the complete corrected run is recorded below.
+No actionable findings against #15 and parent #12. The review covered complete durable plans, immutable snapshots, independent outcomes, persistent physical-Bot limits, administrator target visibility, producer privacy, and authorized/audited per-target operations. The first full run found that ordinary retry exhaustion unnecessarily invoked the backoff callback. The worker now computes backoff only when another attempt is allowed, while final-attempt 429 still persists Telegram’s Retry-After. Both review axes rechecked this correction with no new findings. The focused legacy fault-lifecycle and final-429 regression tests passed; the complete corrected run passed as recorded below.
 
 These are local acceptance checks. Keep/Monitor integration and DNS migration belong to subsequent tickets; no production cutover is part of #15.
+
+## Final checks — passed
+
+`ee/telegram_gateway/test.sh` exited 0 against `844aed646d468581a9c813e4acdbdcb99e6897a5`:
+
+- Source-pinned smoke-test and runtime images built successfully with pure Go.
+- All seven packaging contracts passed.
+- Packaged secret handling, privilege drop, health, authentication, SQLite/key restart and native-volume migration passed.
+- Explicit real-Redis durable reclaim and DLQ integration passed.
+- `CGO_ENABLED=0 go build -p 1 ./...` passed.
+- `go test -p 1 -parallel 1 ./... -count=1` passed, including existing Business Route, Telegram proxy and Adapter regressions. The `tests` package completed in 150.219 seconds.
+- Chromium browser acceptance passed separately with no JavaScript errors; both synthetic screenshots were regenerated and visually checked. The final retry-only correction does not change that frontend.
+
+Review result: Standards — zero hard violations, one nonblocking parser-duplication observation; Spec — zero actionable findings. The final follow-up commit only records validation evidence and does not change executable code.

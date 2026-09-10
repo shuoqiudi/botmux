@@ -454,6 +454,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateGatewaySecurity(); err != nil {
 		return err
 	}
+	if err := s.migrateServiceNotifications(); err != nil {
+		return err
+	}
 	if err := s.migrateAdapter(); err != nil {
 		return err
 	}

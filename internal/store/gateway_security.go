@@ -342,7 +342,7 @@ func (s *Store) CreateGatewayWorkloadAdmin(name, credentialName, credentialHash,
 
 func (s *Store) GetGatewayWorkloadAdmin(id int64) (*models.GatewayWorkloadAdmin, error) {
 	var w models.GatewayWorkloadAdmin
-	if err := s.db.QueryRow(`SELECT id,name,status,revision,created_at,updated_at FROM gateway_workloads WHERE id=?`, id).Scan(&w.ID, &w.Name, &w.Status, &w.Revision, &w.CreatedAt, &w.UpdatedAt); err != nil {
+	if err := s.db.QueryRow(`SELECT id,name,status,revision,created_at,updated_at,service_publish,service_query FROM gateway_workloads WHERE id=?`, id).Scan(&w.ID, &w.Name, &w.Status, &w.Revision, &w.CreatedAt, &w.UpdatedAt, &w.ServicePermissions.Publish, &w.ServicePermissions.Query); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.Query(`SELECT id,name,enabled,created_at,last_used_at,rotated_at FROM gateway_workload_credentials WHERE workload_id=? ORDER BY id`, id)

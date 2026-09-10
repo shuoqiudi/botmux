@@ -415,5 +415,17 @@
   "gateway_inbound_target": "Обработчик входящих сообщений",
   "gateway_target_backend": "HTTP-сервер",
   "gateway_target_adapter": "Встроенный адаптер it_manage",
-  "gateway_target_prompt": "Обработчик входящих сообщений: backend или it_manage"
+  "gateway_target_prompt": "Обработчик входящих сообщений: backend или it_manage",
+  "notification_services": "Сервисы уведомлений",
+  "notification_services_empty": "Сервисы появляются после первого корректного уведомления.",
+  "notification_fingerprint": "Отпечаток",
+  "notification_subscriptions": "Подписки",
+  "notification_received": "Последнее получение",
+  "notification_details": "ПОДРОБНЕЕ",
+  "notification_no_subscribers": "Нет подписок — не доставлено",
+  "notification_no_subscribers_help": "Доставка не запланирована. Добавление подписок не отправляет прошлые уведомления.",
+  "notification_id": "ID уведомления",
+  "notification_more": "ЕЩЁ",
+  "notification_publish": "Публикация уведомлений сервисов",
+  "notification_query": "Просмотр уведомлений сервисов"
 }

@@ -816,3 +816,7 @@ Botmux is a lightweight single-binary application with minimal resource needs.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+### Service notifications
+
+Workloads can register notification services by fingerprint and retain no-subscriber notifications. See the [service notification API and UI guide (中文)](docs/gateway/service-notifications.md) for credentials, payload limits, idempotency, and receipt queries.

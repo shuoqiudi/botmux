@@ -123,6 +123,23 @@ func (s *Server) handleGatewayWorkloads(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, map[string]any{"workload": item, "credential": credential})
 		return
 	}
+	if r.Method == http.MethodPut && action == "service-permissions" {
+		var input struct {
+			ExpectedRevision int64 `json:"expected_revision"`
+			Publish          bool  `json:"publish"`
+			Query            bool  `json:"query"`
+		}
+		if err := decodeStrictGatewayJSON(w, r, &input); err != nil {
+			writeBusinessError(w, 400, "invalid_request", errors.New("invalid request"))
+			return
+		}
+		item, err := s.store.SetServicePermissions(id, input.ExpectedRevision, models.ServicePermissions{Publish: input.Publish, Query: input.Query}, gatewayAdminActor(r))
+		if gatewaySecurityError(w, err) {
+			return
+		}
+		writeJSON(w, item)
+		return
+	}
 	if r.Method == http.MethodPut && action == "permissions" {
 		var input struct {
 			ExpectedRevision int64                      `json:"expected_revision"`

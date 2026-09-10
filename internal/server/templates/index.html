@@ -1425,6 +1425,7 @@ body::before { display: none; }
       <button class="btn btn-sm btn-primary" onclick="showBotModal()" style="padding:2px 8px;font-size:9px">+ ADD</button>
     </div>
   </div>
+  <div style="padding:0 12px 8px"><button class="btn btn-sm" style="width:100%" id="notificationServicesBtn" onclick="showNotificationServices()">SERVICES</button></div>
   <div class="bot-list" id="botList"></div>
 
   <hr class="sidebar-divider">
@@ -1889,6 +1890,7 @@ function isAdmin() { return currentUser && currentUser.role === 'admin'; }
 let isDemoMode = false;
 
 function showLoginScreen() {
+  resetNotificationServices();
   document.getElementById('loginScreen').style.display = 'flex';
   document.getElementById('appContainer').style.display = 'none';
   document.getElementById('loginError').style.display = 'none';
@@ -1935,6 +1937,7 @@ function updateAuthUI() {
   roleEl.className = 'sidebar-footer-role' + (currentUser.role === 'admin' ? '' : ' role-user');
   // Show/hide admin-only elements
   const adminOnly = isAdmin();
+  document.getElementById('notificationServicesBtn').style.display = adminOnly || currentUser.role === 'operator' ? '' : 'none';
   document.getElementById('usersBtn').style.display = adminOnly ? '' : 'none';
   document.getElementById('apiKeysBtn').style.display = adminOnly ? '' : 'none';
   document.getElementById('logsBtn').style.display = adminOnly ? '' : 'none';
@@ -2570,6 +2573,7 @@ function updateModalLabels() {
   const infoPanelTitle = document.querySelector('#tab-info .panel-title');
   if (infoPanelTitle) infoPanelTitle.textContent = t('channel_data');
   applyBusinessRouteLang();
+  applyNotificationServiceLang();
 }
 
 function updateTagsPanelLabels() {
@@ -4383,6 +4387,18 @@ function closeUserProfile() {
   </div>
 </div>
 
+<div id="notificationServicesModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeNotificationServices()">
+  <div class="modal" style="width:840px;max-width:calc(100vw - 32px);max-height:90vh;overflow:auto;font-size:12px;line-height:1.5">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <h3 id="notificationServicesTitle">Notification services</h3>
+      <button class="btn btn-sm" id="notificationServicesRefresh" onclick="showNotificationServices()">REFRESH</button>
+      <button class="btn btn-sm" id="notificationServicesClose" onclick="closeNotificationServices()">CLOSE</button>
+    </div>
+    <div id="notificationServicesList"></div>
+    <div id="notificationServiceDetail"></div>
+  </div>
+</div>
+
 <!-- Business Routes are separate from per-bot Telegram routing rules. -->
 <div id="businessRoutesModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeBusinessRoutes()">
   <div class="modal" style="max-width:900px;max-height:90vh;overflow:auto">
@@ -4463,6 +4479,76 @@ function closeUserProfile() {
 let logsEventSource = null;
 
 let businessRoutesCache = [];
+let notificationServicesCache = [];
+let notificationServiceDetail = null;
+
+function resetNotificationServices() {
+  notificationServicesCache = [];
+  notificationServiceDetail = null;
+  closeNotificationServices();
+  document.getElementById('notificationServicesList').textContent = '';
+  document.getElementById('notificationServiceDetail').textContent = '';
+}
+function canViewNotificationServices() { return currentUser && (isAdmin() || currentUser.role === 'operator'); }
+function closeNotificationServices() { document.getElementById('notificationServicesModal').style.display = 'none'; }
+function applyNotificationServiceLang() {
+  for (const [id,key] of Object.entries({notificationServicesBtn:'notification_services',notificationServicesTitle:'notification_services',notificationServicesRefresh:'refresh',notificationServicesClose:'close'})) {
+    document.getElementById(id).textContent = t(key);
+  }
+  renderNotificationServices();
+  renderNotificationServiceDetail();
+}
+async function showNotificationServices() {
+  if (!canViewNotificationServices()) return;
+  const user = currentUser;
+  document.getElementById('notificationServicesModal').style.display = 'flex';
+  notificationServiceDetail = null;
+  applyNotificationServiceLang();
+  try {
+    const items = await api('/api/gateway/v1/services');
+    if (currentUser !== user) return;
+    notificationServicesCache = items; renderNotificationServices();
+  } catch(e) { if (currentUser === user) document.getElementById('notificationServicesList').textContent = e.message; }
+}
+function renderNotificationServices() {
+  const el = document.getElementById('notificationServicesList');
+  if (!notificationServicesCache.length) { el.textContent = t('notification_services_empty'); return; }
+  el.innerHTML = notificationServicesCache.map(item => `<div class="route-item" style="margin-bottom:8px;align-items:center;padding:12px">
+    <div class="route-body" style="overflow-wrap:anywhere"><strong>${esc(item.display_name)}</strong>
+    <div>${t('source')}: ${esc(item.source)}</div><div>${t('notification_fingerprint')}: ${esc(item.fingerprint)}</div>
+    <div>${t('notification_subscriptions')}: ${item.subscription_count} · ${t('notification_received')}: ${esc(item.last_received_at)}</div></div>
+    <button class="btn btn-sm" onclick="loadNotificationService(${item.id})">${t('notification_details')}</button></div>`).join('');
+}
+async function loadNotificationService(id, before = '') {
+  if (!canViewNotificationServices()) return;
+  const user = currentUser;
+  try {
+    const detail = await api(`/api/gateway/v1/services/${id}${before ? '?before='+encodeURIComponent(before) : ''}`);
+    if (currentUser !== user) return;
+    if (before && notificationServiceDetail && notificationServiceDetail.service.id === id) detail.notifications = notificationServiceDetail.notifications.concat(detail.notifications);
+    notificationServiceDetail = detail; renderNotificationServiceDetail();
+  } catch(e) { if (currentUser === user) document.getElementById('notificationServiceDetail').textContent = e.message; }
+}
+function renderNotificationServiceDetail() {
+  const el = document.getElementById('notificationServiceDetail');
+  if (!notificationServiceDetail || !canViewNotificationServices()) { el.innerHTML = ''; return; }
+  const {service,notifications,next_before} = notificationServiceDetail;
+  el.innerHTML = `<h3>${esc(service.display_name)}</h3><p>${t('notification_no_subscribers_help')}</p>` + notifications.map(n => `<div class="route-item" style="display:block;margin-bottom:8px;padding:12px;overflow-wrap:anywhere">
+    <strong>${t('notification_no_subscribers')}</strong><div>${esc(n.received_at)}</div><div>${t('notification_id')}: ${esc(n.notification_id)}</div>
+    <div>${t('notification_subscriptions')}: ${n.subscription_count}</div>
+    ${isAdmin() && n.text !== undefined ? `<pre style="white-space:pre-wrap;font-family:inherit">${esc(n.text)}</pre>` : ''}</div>`).join('') +
+    (next_before ? `<button class="btn btn-sm" onclick="loadNotificationService(${service.id},'${esc(next_before)}')">${t('notification_more')}</button>` : '');
+}
+
+async function saveServiceGrants(id, revision) {
+  const publish = document.getElementById('servicePublish'+id).checked;
+  const query = document.getElementById('serviceQuery'+id).checked;
+  try {
+    await api(`/api/gateway/v1/workloads/${id}/service-permissions`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,publish,query})});
+    await loadGatewayWorkloads(); await loadGatewayAudit();
+  } catch(e) { toast(e.message,'error'); }
+}
+
 
 function applyBusinessRouteLang() {
   const values = {
@@ -4655,7 +4741,12 @@ async function loadGatewayWorkloads() {
     if (!items.length) { el.textContent = t('gateway_workloads_empty'); return; }
     el.innerHTML = items.map(item => `<div class="route-item ${item.status === 'active' ? '' : 'route-disabled'}" style="margin-bottom:6px">
       <div class="route-body"><strong>${esc(item.name)}</strong> <span class="badge">${t('revision')} ${item.revision}</span>
-      <div style="font-size:10px;color:var(--text3);margin-top:5px">${item.permissions.map(p => esc(p.route_key + ':' + p.action)).join(' · ') || t('gateway_no_grants')}</div></div>
+      <div style="font-size:10px;color:var(--text3);margin-top:5px">${item.permissions.map(p => esc(p.route_key + ':' + p.action)).join(' · ') || t('gateway_no_grants')}</div>
+      <form onsubmit="event.preventDefault();saveServiceGrants(${item.id},${item.revision})" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">
+        <label><input type="checkbox" id="servicePublish${item.id}" ${item.service_permissions.publish ? 'checked' : ''}> ${t('notification_publish')}</label>
+        <label><input type="checkbox" id="serviceQuery${item.id}" ${item.service_permissions.query ? 'checked' : ''}> ${t('notification_query')}</label>
+        <button type="submit" class="btn btn-sm">${t('save')}</button>
+      </form></div>
       <div class="route-actions"><button class="btn btn-sm" onclick="editGatewayGrants(${item.id},${item.revision})">${t('gateway_grants')}</button>
       <button class="btn btn-sm" onclick="rotateGatewayCredential(${item.id},${item.revision})">${t('gateway_rotate')}</button>
       <button class="btn btn-sm" onclick="toggleGatewayWorkload(${item.id},${item.revision},'${item.status}')">${item.status === 'active' ? t('gateway_disable') : t('gateway_enable')}</button></div></div>`).join('');

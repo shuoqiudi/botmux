@@ -415,5 +415,17 @@
   "gateway_inbound_target": "Inbound target",
   "gateway_target_backend": "HTTP backend",
   "gateway_target_adapter": "Embedded it_manage Adapter",
-  "gateway_target_prompt": "Inbound target: backend or it_manage"
+  "gateway_target_prompt": "Inbound target: backend or it_manage",
+  "notification_services": "Notification services",
+  "notification_services_empty": "Services appear after the first valid notification.",
+  "notification_fingerprint": "Fingerprint",
+  "notification_subscriptions": "Subscriptions",
+  "notification_received": "Last received",
+  "notification_details": "DETAILS",
+  "notification_no_subscribers": "No subscribers — not delivered",
+  "notification_no_subscribers_help": "No delivery was scheduled. Historical notifications are not sent when subscriptions are added.",
+  "notification_id": "Notification ID",
+  "notification_more": "MORE",
+  "notification_publish": "Publish service notifications",
+  "notification_query": "Query service notifications"
 }

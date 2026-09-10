@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -470,7 +471,7 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 		s.deadLetter(ctx, queued, delivery, "", "route_disabled", delivery.AttemptCount)
 		return
 	}
-	gate, err := s.botGate(ctx, target.BotAccountID)
+	gate, err := s.botGate(ctx, target)
 	if err != nil {
 		return
 	}
@@ -538,22 +539,24 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 			}
 			return
 		}
-		if telegramErr.Retryable() && attempt < s.config.MaxAttempts {
+		if telegramErr.Retryable() {
 			delay := s.retryDelay(delivery.ID, attempt)
 			if telegramErr.RetryAfter > delay {
 				delay = telegramErr.RetryAfter
 			}
 			next := s.config.Clock.Now().Add(delay)
 			if telegramErr.Class == "telegram_rate_limited" {
-				if err := s.setBotGate(ctx, target.BotAccountID, next); err != nil {
+				if err := s.setBotGate(ctx, target, next); err != nil {
 					return
 				}
 			}
-			_ = s.repo.MarkGatewayDeliveryRetrying(ctx, delivery.ID, attemptID, telegramErr.Class, next)
-			return
-		}
-		if telegramErr.Retryable() {
-			s.deadLetter(ctx, queued, delivery, attemptID, telegramErr.Class, attempt)
+			// Even an exhausted delivery must preserve the Bot's Retry-After
+			// deadline for its other targets and subsequent notifications.
+			if attempt < s.config.MaxAttempts {
+				_ = s.repo.MarkGatewayDeliveryRetrying(ctx, delivery.ID, attemptID, telegramErr.Class, next)
+			} else {
+				s.deadLetter(ctx, queued, delivery, attemptID, telegramErr.Class, attempt)
+			}
 			return
 		}
 	}
@@ -574,7 +577,21 @@ func (s *Service) retryDelay(deliveryID string, attempt int) time.Duration {
 	return retryBackoff(deliveryID, attempt, s.config.BaseRetry, s.config.MaxRetry)
 }
 
-func (s *Service) botGate(ctx context.Context, botID int64) (time.Time, error) {
+// Telegram limits a physical Bot, including aliases of the same account.
+// Keep reading the legacy account gate so upgrades preserve existing deadlines.
+type telegramBotRateLimits interface {
+	GatewayTelegramBotRateLimit(context.Context, int64) (time.Time, error)
+	SetGatewayTelegramBotRateLimit(context.Context, int64, time.Time) error
+}
+
+func targetTelegramBotID(target *models.GatewayOutboundTarget) int64 {
+	prefix, _, _ := strings.Cut(target.Token, ":")
+	id, _ := strconv.ParseInt(prefix, 10, 64)
+	return id
+}
+
+func (s *Service) botGate(ctx context.Context, target *models.GatewayOutboundTarget) (time.Time, error) {
+	botID := target.BotAccountID
 	s.gateMu.Lock()
 	memoryGate := s.botGates[botID]
 	s.gateMu.Unlock()
@@ -582,13 +599,29 @@ func (s *Service) botGate(ctx context.Context, botID int64) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
+	if physical, ok := s.repo.(telegramBotRateLimits); ok && targetTelegramBotID(target) > 0 {
+		gate, err := physical.GatewayTelegramBotRateLimit(ctx, targetTelegramBotID(target))
+		if err != nil {
+			return time.Time{}, err
+		}
+		if gate.After(durableGate) {
+			durableGate = gate
+		}
+	}
 	if durableGate.After(memoryGate) {
 		return durableGate, nil
 	}
 	return memoryGate, nil
 }
 
-func (s *Service) setBotGate(ctx context.Context, botID int64, deadline time.Time) error {
+func (s *Service) setBotGate(ctx context.Context, target *models.GatewayOutboundTarget, deadline time.Time) error {
+	botID := target.BotAccountID
+	// Persist physical identity first; an interruption cannot unblock aliases.
+	if physical, ok := s.repo.(telegramBotRateLimits); ok && targetTelegramBotID(target) > 0 {
+		if err := physical.SetGatewayTelegramBotRateLimit(ctx, targetTelegramBotID(target), deadline); err != nil {
+			return err
+		}
+	}
 	if err := s.repo.SetGatewayBotRateLimit(ctx, botID, deadline); err != nil {
 		return err
 	}

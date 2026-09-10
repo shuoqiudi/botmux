@@ -90,6 +90,11 @@ func (s *Store) migrateGatewayOutbound() error {
 			FOREIGN KEY(delivery_id) REFERENCES gateway_deliveries(id),
 			FOREIGN KEY(route_id) REFERENCES gateway_business_routes(id)
 		);
+		CREATE TABLE IF NOT EXISTS gateway_telegram_bot_rate_limits (
+			telegram_bot_id INTEGER PRIMARY KEY,
+			blocked_until TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
 		CREATE TABLE IF NOT EXISTS gateway_bot_rate_limits (
 			bot_account_id INTEGER PRIMARY KEY,
 			blocked_until TEXT NOT NULL,
@@ -436,8 +441,16 @@ func (s *Store) CompleteGatewayDeliveryAttempt(ctx context.Context, attemptID st
 }
 
 func (s *Store) GatewayBotRateLimit(ctx context.Context, botID int64) (time.Time, error) {
+	return s.gatewayRateLimit(ctx, "gateway_bot_rate_limits", "bot_account_id", botID)
+}
+
+func (s *Store) GatewayTelegramBotRateLimit(ctx context.Context, botID int64) (time.Time, error) {
+	return s.gatewayRateLimit(ctx, "gateway_telegram_bot_rate_limits", "telegram_bot_id", botID)
+}
+
+func (s *Store) gatewayRateLimit(ctx context.Context, table, column string, botID int64) (time.Time, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM gateway_bot_rate_limits WHERE bot_account_id=?`, botID).Scan(&value)
+	err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM `+table+` WHERE `+column+`=?`, botID).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, nil
 	}
@@ -452,11 +465,20 @@ func (s *Store) GatewayBotRateLimit(ctx context.Context, botID int64) (time.Time
 }
 
 func (s *Store) SetGatewayBotRateLimit(ctx context.Context, botID int64, deadline time.Time) error {
+	return s.setGatewayRateLimit(ctx, "gateway_bot_rate_limits", "bot_account_id", botID, deadline)
+}
+
+func (s *Store) SetGatewayTelegramBotRateLimit(ctx context.Context, botID int64, deadline time.Time) error {
+	return s.setGatewayRateLimit(ctx, "gateway_telegram_bot_rate_limits", "telegram_bot_id", botID, deadline)
+}
+
+// Table and column names are private constants supplied by the methods above.
+func (s *Store) setGatewayRateLimit(ctx context.Context, table, column string, botID int64, deadline time.Time) error {
 	s.gatewayMu.Lock()
 	defer s.gatewayMu.Unlock()
 	until := deadline.UTC().Format(time.RFC3339Nano)
 	var current string
-	err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM gateway_bot_rate_limits WHERE bot_account_id=?`, botID).Scan(&current)
+	err := s.db.QueryRowContext(ctx, `SELECT blocked_until FROM `+table+` WHERE `+column+`=?`, botID).Scan(&current)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -469,8 +491,8 @@ func (s *Store) SetGatewayBotRateLimit(ctx context.Context, botID int64, deadlin
 			return nil
 		}
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO gateway_bot_rate_limits(bot_account_id,blocked_until,updated_at)
-		VALUES(?,?,?) ON CONFLICT(bot_account_id) DO UPDATE SET
+	_, err = s.db.ExecContext(ctx, `INSERT INTO `+table+`(`+column+`,blocked_until,updated_at)
+		VALUES(?,?,?) ON CONFLICT(`+column+`) DO UPDATE SET
 		blocked_until=excluded.blocked_until,updated_at=excluded.updated_at`, botID, until, nowRFC3339())
 	return err
 }

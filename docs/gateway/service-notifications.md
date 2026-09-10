@@ -60,7 +60,7 @@ curl -sS "$GATEWAY_ORIGIN/api/v1/services/notifications/opaque-id" \
 
 接入开发任务模板：为业务事件确定稳定 fingerprint；从受管 Secret 读取 workload 凭据；保留 Keep 的正文渲染及通知条件；按事件身份和阶段生成幂等键；提交一次通知；验证 202 与查询；在网页确认来源和无订阅记录。记录“Keep 接收”“Gateway 持久接收”“Telegram 送达”三个阶段，不能互相替代。
 
-完整设计和后续多目标验收/Monitor 迁移范围见 [规格 #12](https://github.com/shuoqiudi/it_telegram/issues/12)。登记接口见 [任务 #13](https://github.com/shuoqiudi/it_telegram/issues/13)，订阅和单目标可靠投递见 [任务 #14](https://github.com/shuoqiudi/it_telegram/issues/14)。
+完整设计和 Monitor 迁移范围见 [规格 #12](https://github.com/shuoqiudi/it_telegram/issues/12)。登记接口见 [任务 #13](https://github.com/shuoqiudi/it_telegram/issues/13)，订阅和单目标可靠投递见 [任务 #14](https://github.com/shuoqiudi/it_telegram/issues/14)，多目标恢复验收见 [任务 #15](https://github.com/shuoqiudi/it_telegram/issues/15) 和 [验证记录](service-multitarget-validation.md)。
 
 
 ## 添加订阅和管理目标
@@ -68,10 +68,10 @@ curl -sS "$GATEWAY_ORIGIN/api/v1/services/notifications/opaque-id" \
 1. 用管理员账号打开 **Notification services / 通知服务**，选择已自动登记的服务。首次没有接收方是正常状态。
 2. 在 **Add subscription / 添加订阅** 表单选择 Bot account 和 Chat target。只显示该账号下有效的目标。保存后列表显示账号、目标及 Telegram 聊天名称。
 3. 新接收方可在同一页面展开 **Configure or validate Bot accounts and chat targets**：先创建账号并输入 Token，再创建聊天目标并输入 Chat ID。保存账号会验证 Telegram `getMe`；保存目标会验证该 Bot 对聊天的访问。Token 只保存在账号配置中，不放进订阅或业务请求。
-4. 用新的幂等键提交一条通知。点详情页 Refresh，查看每个 Delivery 的 ID、状态、尝试次数和安全错误类别。正文按文字展示，不执行 HTML。
+4. 用新的幂等键提交一条通知。点详情页 Refresh，查看送达数 / 快照目标总数，以及每个 Delivery 的 ID、固定 Bot ID / Chat ID、状态、尝试次数和安全错误类别。正文按文字展示，不执行 HTML。
 5. 点击 Cancel subscription 取消接收后续新通知。已经持久接收的 Delivery 继续使用原计划，取消不会删除历史。
 
-一个服务可以添加多个订阅；不存在“最多一个订阅”的限制。同一实际 Telegram Bot 和同一 Chat 不可对同一服务重复有效订阅，即使配置了两个逻辑账号。不同服务可以订阅同一个 Chat。账号和聊天变更也执行重复检查。
+一个服务可以添加多个订阅；不存在“最多一个订阅”的限制。同一实际 Telegram Bot 和同一 Chat 不可对同一服务重复有效订阅，即使配置了两个逻辑账号。同一 Bot 可以订阅多个 Chat，同一 Chat 也可以分别使用不同 Bot 订阅；不同服务可以订阅同一个 Chat。账号和聊天变更也执行重复检查。
 
 聊天目标变更：在配置表单选择已有目标、修改 Chat ID 并保存。之后新通知使用新 Chat，旧 Delivery 的 Chat 保持不变。故障发给 A 后改成 B，新的恢复通知发给 B；Gateway 不识别故障/恢复类别，也不保存事故周期订阅快照。
 
@@ -112,8 +112,20 @@ Token 轮换：选择已有 Bot 账号并输入新 Token；留空表示保留现
 | `succeeded` | 全部 Delivery 已确认成功 |
 | `failed` | 至少一个 Delivery 进入死信、结果不确定或被丢弃；不表示其他目标也失败 |
 
-子状态包括 `pending_enqueue`、`accepted`、`processing`、`retrying`、`succeeded`、`dead-lettered`、`reconciling`、`replay_pending`、`discarded`。限流期限写入 SQLite，重启后继续等待；可确定的临时失败使用既有有限重试。发送结果不确定时进入 `reconciling`，不会自动盲目重发。Gateway 不承诺 Telegram 端 exactly-once。
+管理员通知详情中的 `subscription_id`、`bot_account_id`、`telegram_bot_id`、`chat_id` 来自持久接收快照，取消订阅或修改当前 Chat 后仍显示原目标。业务查询和 operator 通知历史不包含这些物理目标字段。
+
+子状态包括 `pending_enqueue`、`accepted`、`processing`、`retrying`、`succeeded`、`dead-lettered`、`reconciling`、`replay_pending`、`discarded`。429 限流按实际 Telegram Bot 身份写入 SQLite，同 Bot 的不同逻辑账号及 Chat 共用期限，重启后继续等待；即使触发 429 的 Delivery 已耗尽重试，期限仍有效。其他 Bot 不受该期限阻塞；可确定的临时失败使用既有有限重试。发送结果不确定时进入 `reconciling`，不会自动盲目重发。Gateway 不承诺 Telegram 端 exactly-once。
 
 SQLite outbox 由现有出站 worker 持续恢复。初始入队失败、入队响应丢失和进程重启均复用原 Delivery；Redis 使用 Delivery ID 去重。运行环境必须启用现有 Gateway 出站服务并使用持久 Redis/AOF。接收后查看 `pending` 不能当作 Telegram 成功。
 
-死信可从服务详情或 Routes 的 DLQ 操作入口重放/丢弃。操作需要 operator 或管理员权限并记录审计。重放始终使用原 Bot 账号、实际 Bot 身份和 Chat；不会重新展开当前订阅。每次明确请求的死信重放有持久 generation，即使 Redis 重放响应丢失，worker 仍能完成该次入队。结果不确定的 `reconciling` 不提供自动重放按钮，需要先人工核对 Telegram 的实际结果。
+死信可从服务详情或 Routes 的 DLQ 操作入口重放/丢弃。操作需要 operator 或管理员权限并记录审计。重放始终使用原 Bot 账号、实际 Bot 身份和 Chat；不会重新展开当前订阅。只重放所选的失败目标，已成功或结果不确定的其他 Delivery 保持原状态；只要仍有不确定或失败目标，父通知就不能显示全部成功。每次明确请求的死信重放有持久 generation，即使 Redis 重放响应丢失，worker 仍能完成该次入队。结果不确定的 `reconciling` 不提供自动重放按钮，需要先人工核对 Telegram 的实际结果。
+
+## 一次提交到多个接收方
+
+例如同时订阅 Bot A / Chat 1、Bot A / Chat 2、Bot B / Chat 1，Keep 只提交一次服务通知。202 返回 `subscription_count: 3` 和三个独立 Delivery；不要求 Keep 按群展开请求。
+
+接收与订阅或账号配置修改共享完整事务边界：一次修改影响多个目标时，通知只能使用修改前或修改后的完整集合。添加和取消是两个独立管理操作；两次操作之间收到的新通知按当时已保存的集合处理。
+
+某目标进入死信时，其他目标继续发送；等待重试不会占用其他 Bot 的发送机会。若两个目标成功、一个重试中，汇总仍为 `pending`；若第三个进入死信或结果不确定，汇总为 `failed`，送达数为 `2 / 3`。只有三个目标均确认成功才是 `succeeded`。
+
+进程在逐目标入队期间中断或 Redis 暂时不可用时，出站 worker 从 SQLite outbox 恢复剩余目标；已入队项按 Delivery ID 去重。接收响应丢失时，上游重放相同幂等键恢复原通知及其完整计划。不要通过生成新键尝试修复旧通知，这会创建一次新通知并使用最新订阅。

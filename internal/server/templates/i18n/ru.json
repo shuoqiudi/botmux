@@ -430,6 +430,8 @@
   "notification_query": "Просмотр уведомлений сервисов",
   "service_add_subscription": "Добавить подписку",
   "service_cancel_subscription": "Отменить подписку",
+  "service_target_succeeded": "Доставлено",
+  "service_delivered_count": "Доставлено получателям",
   "service_bot": "Аккаунт бота",
   "service_destination": "Получатель",
   "service_name": "Название",

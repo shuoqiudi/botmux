@@ -144,6 +144,11 @@ func writeServiceError(w http.ResponseWriter, status int, code string) {
 func serviceNotificationReceipt(n models.ServiceNotification) models.ServiceNotification {
 	n.Text = ""
 	n.ParseMode = ""
+	n.Deliveries = append([]models.ServiceNotificationDelivery{}, n.Deliveries...)
+	for i := range n.Deliveries {
+		d := &n.Deliveries[i]
+		d.SubscriptionID, d.BotAccountID, d.TelegramBotID, d.ChatID = 0, 0, 0, 0
+	}
 	return n
 }
 

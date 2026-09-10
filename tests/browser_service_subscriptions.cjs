@@ -67,21 +67,45 @@ const puppeteer = require(process.env.PUPPETEER_MODULE || 'puppeteer');
   await page.select('#serviceSubscriptionDestination',newDestination);
   await page.$eval('#serviceSubscriptionForm',form=>form.requestSubmit());
   await page.waitForSelector('.service-subscription-cancel');
+  // Keep the new Bot and add a second Bot/chat through the same form.
+  await page.select('#serviceSubscriptionBot',process.env.SUBSCRIPTION_ACCOUNT);
+  await page.select('#serviceSubscriptionDestination',process.env.SUBSCRIPTION_DESTINATION);
+  await page.$eval('#serviceSubscriptionForm',form=>form.requestSubmit());
+  await page.waitForFunction(()=>document.querySelectorAll('.service-subscription-cancel').length===2);
   const failed=await page.evaluate(async()=>{
     const r=await fetch('/api/v1/services/notifications',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer subscriber-secret','Idempotency-Key':'browser-failure'},body:JSON.stringify({fingerprint:'dns',text:'Browser failure'})});return r.json();
   });
   await page.waitForFunction(async id=>{
     const r=await fetch('/api/v1/services/notifications/'+id,{headers:{Authorization:'Bearer subscriber-secret'}});return (await r.json()).delivery_summary.status==='failed';
   },{},failed.notification_id);
+  assert.equal(failed.subscription_count,2);
+  await page.waitForFunction(async id=>{
+    const r=await fetch('/api/v1/services/notifications/'+id,{headers:{Authorization:'Bearer subscriber-secret'}});return (await r.json()).delivery_summary.succeeded===1;
+  },{},failed.notification_id);
   await page.click('#serviceDetailRefresh');
   await page.waitForFunction(()=>document.querySelector('#notificationServiceDetail').textContent.includes('Failed — dead-letter queue'));
+  const history=await page.$eval('#notificationServiceDetail',e=>e.textContent);
+  assert(history.includes('940003') && history.includes('-100940003'));
+  assert(history.includes('940001') && history.includes('-100940002'));
+  assert(history.includes('Delivered targets: 1 / 2'));
+  // Cancel a subscription without removing either historical Delivery.
+  await page.click('.service-subscription-cancel');
+  await page.waitForFunction(()=>document.querySelectorAll('.service-subscription-cancel').length===1);
+  for(const d of failed.deliveries) assert(await page.$(`[data-delivery-id="${d.delivery_id}"]`));
   if(process.env.SUBSCRIPTION_SCREENSHOTS){
    await page.screenshot({path:process.env.SUBSCRIPTION_SCREENSHOTS+'/service-subscriptions-en-dark.png',fullPage:true});
   }
   await page.evaluate(()=>{localStorage.setItem('lang','ru');currentLang='ru';applyLang();document.documentElement.setAttribute('data-theme','light');});
   assert((await page.$eval('#notificationServiceDetail',e=>e.textContent)).includes('Подписки'));
   if(process.env.SUBSCRIPTION_SCREENSHOTS){await page.screenshot({path:process.env.SUBSCRIPTION_SCREENSHOTS+'/service-subscriptions-ru-light.png',fullPage:true});}
+  // The per-target operation uses the existing audited DLQ endpoint.
+  page.on('dialog',dialog=>dialog.accept());
+  const failedID=await page.evaluate(id=>notificationServiceDetail.notifications.find(n=>n.notification_id===id).deliveries.find(d=>d.status==='dead-lettered').delivery_id,failed.notification_id);
+  await page.click(`[data-delivery-id="${failedID}"] button:last-child`);
+  await page.waitForFunction(id=>notificationServiceDetail.notifications.find(n=>n.notification_id===id).deliveries.some(d=>d.status==='discarded'),{},failed.notification_id);
+  const audit=await page.evaluate(async()=>{const r=await fetch('/api/gateway/v1/audit');return r.text()});
+  assert(audit.includes('dlq.discard') && audit.includes(failedID));
   assert.deepEqual(errors,[]);
-  console.log('Browser subscription, delivery, cancellation, target migration and EN/RU checks passed');
+  console.log('Browser two-target subscription, partial failure, historical targets, cancellation, audited discard and EN/RU checks passed');
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

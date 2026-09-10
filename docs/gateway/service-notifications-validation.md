@@ -32,4 +32,12 @@ Standards: no actionable findings against AGENTS.md/CONTRIBUTING.md or the revie
 
 Spec: one privacy finding, corrected and independently re-reviewed with no remaining findings.
 
-Packaged runtime and full serial regression results are recorded with the implementation completion report. This is local acceptance, not a production rollout or real Telegram delivery test.
+## Packaged validation
+
+Tested implementation: `78992940edbe02eee750b89cc4ef613bb216383a`, in a clean detached checkout. `ee/telegram_gateway/test.sh` built the pinned smoke-tests and runtime images, passed all seven packaging contracts, and passed packaged secrets, privilege drop, health, authentication, SQLite/key restart and native-volume migration. The pure-Go build and explicit Redis durable reclaim/DLQ test passed against disposable Redis with AOF/always.
+
+The first full serial suite run failed only `TestGatewayAdapterAmbiguousTriggerRestart` with `jenkins_trigger_uncertain`. The same focused test reproduced that failure on the unchanged baseline `f6d7246add062eb40214f5b59818abd949eb72cd` (`-count=10`); the candidate passed five focused repetitions. This is a pre-existing timing-sensitive Adapter test, not a new notification failure. No Adapter implementation or test was changed.
+
+The subsequent `go test -p 1 -parallel 1 ./... -count=1` run passed completely in the candidate image with isolated Redis; the `tests` package completed in 114.248 seconds. Existing Business Route, compatible proxy and Adapter regression suites passed. This rerun was justified by the initial baseline-reproducible failure.
+
+This is local acceptance, not a production rollout or real Telegram delivery test.

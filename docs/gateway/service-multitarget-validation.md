@@ -31,6 +31,14 @@ Screenshots: [English/dark](../../screenshots/service-subscriptions-en-dark.png)
 
 ## Validation status
 
-Focused multi-target and existing subscription HTTP tests passed, including the isolated AOF recovery cases. Browser acceptance passed. Full regression and the two-axis code review are recorded below after completion.
+Focused multi-target and existing subscription HTTP tests passed, including the isolated AOF recovery cases. Browser acceptance passed. The implementation candidate is `a318dbb`; the complete packaging/regression run uses a clean detached checkout of that commit.
+
+### Standards review
+
+No hard violations of AGENTS.md or CONTRIBUTING.md. One nonblocking, low-priority judgement call: `targetTelegramBotID` duplicates part of the store's token identity parser. The store strictly validates accepted service targets, while the worker's prefix extraction adds physical rate limits alongside the legacy repository contract. This review retained the existing boundary rather than changing token validation or repository requirements. README usage documentation was also updated.
+
+### Spec review
+
+No actionable findings against #15 and parent #12. The review covered complete durable plans, immutable snapshots, independent outcomes, persistent physical-Bot limits, administrator target visibility, producer privacy, and authorized/audited per-target operations. The first full run found that ordinary retry exhaustion unnecessarily invoked the backoff callback. The worker now computes backoff only when another attempt is allowed, while final-attempt 429 still persists Telegram’s Retry-After. Both review axes rechecked this correction with no new findings. The focused legacy fault-lifecycle and final-429 regression tests passed; the complete corrected run is recorded below.
 
 These are local acceptance checks. Keep/Monitor integration and DNS migration belong to subsequent tickets; no production cutover is part of #15.

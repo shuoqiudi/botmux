@@ -540,9 +540,11 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 			return
 		}
 		if telegramErr.Retryable() {
-			delay := s.retryDelay(delivery.ID, attempt)
-			if telegramErr.RetryAfter > delay {
-				delay = telegramErr.RetryAfter
+			delay := telegramErr.RetryAfter
+			if attempt < s.config.MaxAttempts {
+				if backoff := s.retryDelay(delivery.ID, attempt); backoff > delay {
+					delay = backoff
+				}
 			}
 			next := s.config.Clock.Now().Add(delay)
 			if telegramErr.Class == "telegram_rate_limited" {

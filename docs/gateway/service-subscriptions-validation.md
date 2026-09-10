@@ -31,4 +31,12 @@ Screenshots: [English/dark](../../screenshots/service-subscriptions-en-dark.png)
 
 Standards review: one untranslated Chat ID label was corrected to use the existing EN/RU key and re-reviewed; zero remaining findings. Spec review: zero findings against #14.
 
-Focused notification tests, pure-Go build and browser checks pass. Packaged full-suite results are recorded after the candidate checks complete. These are local acceptance checks, not a production rollout.
+Validated implementation: `ba8ea435660867cfa27d71ca491f511df44d9587`, from a clean detached checkout.
+
+- Focused service notification/subscription HTTP tests passed with real SQLite and isolated AOF Redis.
+- The pure-Go build and Chromium browser acceptance passed, including the corrected translation and regenerated screenshots.
+- `ee/telegram_gateway/test.sh` passed all seven packaging contracts plus packaged secrets, privilege drop, health, authentication, SQLite/key restart and native-volume migration.
+- The explicit Redis durable reclaim/DLQ check passed.
+- `go test -p 1 -parallel 1 ./... -count=1` passed in the smoke-test image with isolated Redis. The `tests` package completed in 139.729 seconds, including the new subprocess AOF recovery tests. Existing Business Route, compatible Telegram proxy and Adapter regressions passed.
+
+The full suite passed on its first final run. Browser acceptance ran separately because the packaged Go suite does not install Chromium/Node. These are local acceptance checks, not a production rollout.

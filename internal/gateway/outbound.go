@@ -184,6 +184,10 @@ func (s *Service) Start(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	s.cancel = cancel
 	s.health.start()
+	if repo, ok := s.repo.(serviceEnqueueRepository); ok {
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.runServiceEnqueues(ctx, repo) }()
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -447,6 +451,21 @@ func (s *Service) processOutbound(ctx context.Context, queued QueueMessage) {
 			target, err = pinned, nil
 		}
 	}
+	if resolver, ok := s.repo.(interface {
+		ResolveServiceDeliveryTarget(context.Context, string) (*models.GatewayOutboundTarget, error)
+	}); ok {
+		pinned, pinErr := resolver.ResolveServiceDeliveryTarget(ctx, delivery.ID)
+		if errors.Is(pinErr, store.ErrServiceBotIdentityChanged) {
+			s.deadLetter(ctx, queued, delivery, "", "service_bot_identity_changed", delivery.AttemptCount)
+			return
+		}
+		if pinErr != nil {
+			return
+		}
+		if pinned != nil {
+			target, err = pinned, nil
+		}
+	}
 	if err != nil || !target.Enabled || !target.Outbound {
 		s.deadLetter(ctx, queued, delivery, "", "route_disabled", delivery.AttemptCount)
 		return
@@ -590,4 +609,44 @@ func (s *Service) deadLetter(ctx context.Context, queued QueueMessage, delivery 
 		return
 	}
 	_ = s.queue.MoveToDLQAndAck(ctx, queued, DLQMetadata{RouteKey: delivery.RouteKey, AttemptCount: attempts, ErrorClass: class})
+}
+
+// The SQLite outbox survives a missing Redis append or its lost response. Redis
+// Append is idempotent by delivery ID; removing the outbox entry and advancing
+// the delivery state share one SQLite commit.
+type serviceEnqueueRepository interface {
+	PendingServiceEnqueues(context.Context) ([]models.ServiceEnqueue, error)
+	CompleteServiceEnqueue(context.Context, models.ServiceEnqueue) error
+}
+
+func (s *Service) runServiceEnqueues(ctx context.Context, repo serviceEnqueueRepository) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		ids, err := repo.PendingServiceEnqueues(ctx)
+		if err == nil {
+			for _, item := range ids {
+				var err error
+				if item.ReplayGeneration == 0 {
+					_, err = s.queue.Append(ctx, item.DeliveryID)
+				} else {
+					replayer, ok := s.queue.(interface {
+						ReplayFromDLQ(context.Context, string, int) (string, error)
+					})
+					if !ok {
+						continue
+					}
+					_, err = replayer.ReplayFromDLQ(ctx, item.DeliveryID, item.ReplayGeneration)
+				}
+				if err == nil {
+					_ = repo.CompleteServiceEnqueue(ctx, item)
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

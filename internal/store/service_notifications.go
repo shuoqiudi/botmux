@@ -39,7 +39,10 @@ func (s *Store) migrateServiceNotifications() error {
  );
  CREATE INDEX IF NOT EXISTS idx_service_notifications_history ON gateway_service_notifications(service_id,received_at DESC);
  `)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.migrateServiceSubscriptions()
 }
 
 func (s *Store) SetServicePermissions(id, expected int64, permissions models.ServicePermissions, actorID string) (*models.GatewayWorkloadAdmin, error) {
@@ -106,7 +109,11 @@ func (s *Store) AcceptServiceNotification(ctx context.Context, workloadID int64,
 		if originalHash != hash {
 			return nil, ErrGatewayIdempotencyConflict
 		}
-		return scanServiceNotification(tx.QueryRowContext(ctx, `SELECT `+serviceNotificationColumns+` FROM gateway_service_notifications WHERE workload_id=? AND idempotency_key=?`, workloadID, key))
+		n, err := scanServiceNotification(tx.QueryRowContext(ctx, `SELECT `+serviceNotificationColumns+` FROM gateway_service_notifications WHERE workload_id=? AND idempotency_key=?`, workloadID, key))
+		if err != nil {
+			return nil, err
+		}
+		return n, loadServiceDeliveries(ctx, tx, n)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -123,12 +130,26 @@ func (s *Store) AcceptServiceNotification(ctx context.Context, workloadID int64,
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM gateway_notification_services WHERE workload_id=? AND fingerprint=?`, workloadID, input.Fingerprint).Scan(&serviceID); err != nil {
 		return nil, err
 	}
+	recipients, err := s.serviceRecipients(ctx, tx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	status := "no_subscribers"
+	if len(recipients) > 0 {
+		status = "accepted"
+	}
 	id := uuid.NewString()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_service_notifications(id,workload_id,service_id,idempotency_key,payload_hash,text,parse_mode,status,subscription_count,received_at) VALUES(?,?,?,?,?,?,?,'no_subscribers',0,?)`, id, workloadID, serviceID, key, hash, input.Text, input.ParseMode, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_service_notifications(id,workload_id,service_id,idempotency_key,payload_hash,text,parse_mode,status,subscription_count,received_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, workloadID, serviceID, key, hash, input.Text, input.ParseMode, status, len(recipients), now); err != nil {
 		return nil, err
 	}
 	n, err := scanServiceNotification(tx.QueryRowContext(ctx, `SELECT `+serviceNotificationColumns+` FROM gateway_service_notifications WHERE id=?`, id))
 	if err != nil {
+		return nil, err
+	}
+	if err := createServiceDeliveries(ctx, tx, n, workloadID, hash, recipients); err != nil {
+		return nil, err
+	}
+	if err := loadServiceDeliveries(ctx, tx, n); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -138,14 +159,18 @@ func (s *Store) AcceptServiceNotification(ctx context.Context, workloadID int64,
 }
 
 func (s *Store) GetServiceNotification(ctx context.Context, workloadID int64, id string) (*models.ServiceNotification, error) {
-	return scanServiceNotification(s.db.QueryRowContext(ctx, `SELECT `+serviceNotificationColumns+` FROM gateway_service_notifications WHERE workload_id=? AND id=?`, workloadID, id))
+	n, err := scanServiceNotification(s.db.QueryRowContext(ctx, `SELECT `+serviceNotificationColumns+` FROM gateway_service_notifications WHERE workload_id=? AND id=?`, workloadID, id))
+	if err != nil {
+		return nil, err
+	}
+	return n, loadServiceDeliveries(ctx, s.db, n)
 }
 
-const notificationServiceColumns = `s.id,s.workload_id,w.name,s.fingerprint,s.display_name,s.last_received_at`
+const notificationServiceColumns = `s.id,s.workload_id,w.name,s.fingerprint,s.display_name,s.last_received_at,s.revision,(SELECT COUNT(*) FROM gateway_service_subscriptions p WHERE p.service_id=s.id AND p.active=1)`
 
 func scanNotificationService(row interface{ Scan(...any) error }) (*models.NotificationService, error) {
 	var s models.NotificationService
-	err := row.Scan(&s.ID, &s.WorkloadID, &s.Source, &s.Fingerprint, &s.DisplayName, &s.LastReceivedAt)
+	err := row.Scan(&s.ID, &s.WorkloadID, &s.Source, &s.Fingerprint, &s.DisplayName, &s.LastReceivedAt, &s.Revision, &s.SubscriptionCount)
 	return &s, err
 }
 
@@ -185,5 +210,46 @@ func (s *Store) ServiceNotificationHistory(ctx context.Context, serviceID int64,
 		}
 		items = append(items, *item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range items {
+		if err := loadServiceDeliveries(ctx, s.db, &items[i]); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func loadServiceDeliveries(ctx context.Context, query interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, n *models.ServiceNotification) error {
+	rows, err := query.QueryContext(ctx, `SELECT d.id,d.status,d.safe_error_class,d.attempt_count FROM gateway_service_recipients p JOIN gateway_deliveries d ON d.id=p.delivery_id WHERE p.notification_id=? ORDER BY p.subscription_id`, n.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	n.Deliveries = []models.ServiceNotificationDelivery{}
+	n.DeliverySummary = models.ServiceDeliverySummary{Status: "no_subscribers", Total: n.SubscriptionCount}
+	if n.SubscriptionCount > 0 {
+		n.DeliverySummary.Status = "pending"
+	}
+	for rows.Next() {
+		var d models.ServiceNotificationDelivery
+		if err := rows.Scan(&d.ID, &d.Status, &d.ErrorClass, &d.AttemptCount); err != nil {
+			return err
+		}
+		n.Deliveries = append(n.Deliveries, d)
+		if d.Status == "succeeded" {
+			n.DeliverySummary.Succeeded++
+		}
+		if d.Status == "dead-lettered" || d.Status == "reconciling" || d.Status == "discarded" {
+			n.DeliverySummary.Status = "failed"
+		}
+	}
+	if n.SubscriptionCount > 0 && n.DeliverySummary.Succeeded == n.SubscriptionCount {
+		n.DeliverySummary.Status = "succeeded"
+	}
+	return rows.Err()
 }

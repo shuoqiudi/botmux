@@ -819,4 +819,4 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
 ### Service notifications
 
-Workloads can register notification services by fingerprint and retain no-subscriber notifications. See the [service notification API and UI guide (中文)](docs/gateway/service-notifications.md) for credentials, payload limits, idempotency, and receipt queries.
+Workloads publish notifications by fingerprint. Administrators select Bot accounts and chat targets in service subscription forms; each accepted notification keeps its own durable recipient snapshots and Delivery records. Cancellation and target changes apply to new notifications. See the [service notification API and UI guide (中文)](docs/gateway/service-notifications.md) for setup, token rotation, delivery states, and recovery.

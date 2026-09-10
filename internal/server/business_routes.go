@@ -214,11 +214,19 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if input.ExpectedRevision <= 0 {
+			writeBusinessError(w, 400, "expected_revision_required", store.ErrExpectedRevisionRequired)
+			return
+		}
 		expected := input.ExpectedRevision
 		if expected == 0 {
 			expected = existing.Revision
 		}
 		if err := s.store.RotateBotAccount(id, expected, input.Name, username, input.Token, gatewayAdminActor(r)); err != nil {
+			if errors.Is(err, store.ErrDuplicateSubscription) {
+				writeBusinessError(w, 409, "duplicate_subscription", err)
+				return
+			}
 			if errors.Is(err, store.ErrRevisionConflict) {
 				writeBusinessError(w, 409, "revision_conflict", err)
 				return
@@ -331,11 +339,19 @@ func (s *Server) handleTelegramDestinations(w http.ResponseWriter, r *http.Reque
 		writeBusinessError(w, 404, "not_found", errors.New("destination not found"))
 		return
 	}
+	if input.ExpectedRevision <= 0 {
+		writeBusinessError(w, 400, "expected_revision_required", store.ErrExpectedRevisionRequired)
+		return
+	}
 	expected := input.ExpectedRevision
 	if expected == 0 {
 		expected = existing.Revision
 	}
 	if err := s.store.MigrateTelegramDestination(destination, expected, gatewayAdminActor(r)); err != nil {
+		if errors.Is(err, store.ErrDuplicateSubscription) {
+			writeBusinessError(w, 409, "duplicate_subscription", err)
+			return
+		}
 		if errors.Is(err, store.ErrRevisionConflict) {
 			writeBusinessError(w, 409, "revision_conflict", err)
 			return

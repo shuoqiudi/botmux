@@ -231,9 +231,9 @@ func scanGatewayDelivery(scanner interface{ Scan(...any) error }) (*models.Gatew
 	return &d, nil
 }
 
-const gatewayDeliverySelect = `SELECT d.id,d.route_id,r.route_key,d.route_revision,d.workload_id,d.direction,
+const gatewayDeliverySelect = `SELECT d.id,COALESCE(d.route_id,0),COALESCE(r.route_key,''),d.route_revision,d.workload_id,d.direction,
 	d.action,d.status,d.attempt_count,d.safe_error_class,d.created_at,d.accepted_at,d.next_attempt_at,d.completed_at,d.updated_at
-	FROM gateway_deliveries d JOIN gateway_business_routes r ON r.id=d.route_id`
+	FROM gateway_deliveries d LEFT JOIN gateway_business_routes r ON r.id=d.route_id`
 
 func (s *Store) CreateGatewayOutboundDelivery(ctx context.Context, in models.GatewayDeliveryCreate) (*models.GatewayDelivery, bool, error) {
 	s.gatewayMu.Lock()

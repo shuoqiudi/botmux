@@ -15,14 +15,15 @@ type GatewayPermission struct {
 }
 
 type GatewayWorkloadAdmin struct {
-	ID          int64                       `json:"id"`
-	Name        string                      `json:"name"`
-	Status      string                      `json:"status"`
-	Revision    int64                       `json:"revision"`
-	Credentials []GatewayWorkloadCredential `json:"credentials"`
-	Permissions []GatewayPermission         `json:"permissions"`
-	CreatedAt   string                      `json:"created_at"`
-	UpdatedAt   string                      `json:"updated_at"`
+	ServicePermissions ServicePermissions          `json:"service_permissions"`
+	ID                 int64                       `json:"id"`
+	Name               string                      `json:"name"`
+	Status             string                      `json:"status"`
+	Revision           int64                       `json:"revision"`
+	Credentials        []GatewayWorkloadCredential `json:"credentials"`
+	Permissions        []GatewayPermission         `json:"permissions"`
+	CreatedAt          string                      `json:"created_at"`
+	UpdatedAt          string                      `json:"updated_at"`
 }
 
 type GatewayAuditEvent struct {

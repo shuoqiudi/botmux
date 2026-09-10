@@ -423,6 +423,10 @@ func (s *Server) BuildMux() *http.ServeMux {
 	// Workload-authenticated business interface. This intentionally does not
 	// accept admin sessions or the legacy user API keys.
 	mux.HandleFunc("/api/v1/routes/", s.handleGatewayOutbound)
+	mux.HandleFunc("/api/v1/services/notifications", s.handleServiceNotifications)
+	mux.HandleFunc("/api/v1/services/notifications/", s.handleServiceNotifications)
+	mux.HandleFunc("/api/gateway/v1/services", s.gatewayOperatorOnly(s.handleNotificationServicesAdmin))
+	mux.HandleFunc("/api/gateway/v1/services/", s.gatewayOperatorOnly(s.handleNotificationServicesAdmin))
 
 	// Bridges — admin only for management, no auth for incoming webhook
 	mux.HandleFunc("/api/bridges", s.adminOnly(s.handleBridgeList))

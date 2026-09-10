@@ -430,6 +430,8 @@
   "notification_query": "Query service notifications",
   "service_add_subscription": "Add subscription",
   "service_cancel_subscription": "Cancel subscription",
+  "service_target_succeeded": "Delivered",
+  "service_delivered_count": "Delivered targets",
   "service_bot": "Bot account",
   "service_destination": "Chat target",
   "service_name": "Name",

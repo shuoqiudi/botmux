@@ -4574,14 +4574,14 @@ function renderNotificationServiceDetail() {
   const {service,subscriptions,notifications,next_before} = notificationServiceDetail;
   el.innerHTML = `<h3>${esc(service.display_name)}</h3>
     <button class="btn btn-sm" id="serviceDetailRefresh" onclick="loadNotificationService(${service.id})">${t('refresh')}</button>
-    <h4>${t('notification_subscriptions')}</h4>` + subscriptions.map(p=>`<div class="route-item" style="padding:8px;margin:8px 0"><div class="route-body">${esc(p.bot_name)} → ${esc(p.destination_name)} (${esc(p.chat_title)})</div>
+    <h4>${t('notification_subscriptions')}: ${service.subscription_count}</h4>` + subscriptions.map(p=>`<div class="route-item" style="padding:8px;margin:8px 0"><div class="route-body">${esc(p.bot_name)} → ${esc(p.destination_name)} (${esc(p.chat_title)})</div>
       ${isAdmin()?`<button class="btn btn-sm service-subscription-cancel" onclick="cancelServiceSubscription(${p.id})">${t('service_cancel_subscription')}</button>`:''}</div>`).join('') +
     (isAdmin()?renderServiceSubscriptionForms():'') +
     `<h4>${t('service_notifications_history')}</h4>` + notifications.map(n=>`<div class="route-item" style="display:block;margin-bottom:8px;padding:12px;overflow-wrap:anywhere">
       <strong>${n.delivery_summary.status==='no_subscribers'?t('notification_no_subscribers'):serviceStatus(n.delivery_summary.status)}</strong>
-      <div>${esc(n.received_at)}</div><div>${t('notification_id')}: ${esc(n.notification_id)}</div><div>${t('notification_subscriptions')}: ${n.subscription_count}</div>
+      <div>${esc(n.received_at)}</div><div>${t('service_delivered_count')}: ${n.delivery_summary.succeeded} / ${n.delivery_summary.total}</div><div>${t('notification_id')}: ${esc(n.notification_id)}</div><div>${t('notification_subscriptions')}: ${n.subscription_count}</div>
       ${n.status==='no_subscribers'?`<p>${t('notification_no_subscribers_help')}</p>`:''}
-      ${n.deliveries.map(d=>`<div><code>${esc(d.delivery_id)}</code> · ${esc(serviceStatus(d.status))} · ${t('gateway_attempts')}: ${d.attempt_count}${d.error_class?` · ${esc(d.error_class)}`:''}
+      ${n.deliveries.map(d=>`<div class="service-delivery" data-delivery-id="${esc(d.delivery_id)}">${isAdmin()?`<div>${t('service_bot')}: ${d.telegram_bot_id} · ${t('chat_id')}: ${d.chat_id}</div>`:''}<code>${esc(d.delivery_id)}</code> · ${esc(d.status==='succeeded'?t('service_target_succeeded'):serviceStatus(d.status))} · ${t('gateway_attempts')}: ${d.attempt_count}${d.error_class?` · ${esc(d.error_class)}`:''}
         ${d.status==='dead-lettered'?`<button class="btn btn-sm" onclick="serviceDeliveryAction('${esc(d.delivery_id)}','replay')">${t('gateway_replay')}</button><button class="btn btn-sm" onclick="serviceDeliveryAction('${esc(d.delivery_id)}','discard')">${t('gateway_discard')}</button>`:''}</div>`).join('')}
       ${isAdmin() && n.text !== undefined?`<pre style="white-space:pre-wrap;font-family:inherit">${esc(n.text)}</pre>`:''}</div>`).join('') +
     (next_before?`<button class="btn btn-sm" onclick="loadNotificationService(${service.id},'${esc(next_before)}')">${t('notification_more')}</button>`:'');

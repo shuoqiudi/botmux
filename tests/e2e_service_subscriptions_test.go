@@ -286,7 +286,8 @@ func TestE2E_ServiceSubscriptionBrowser(t *testing.T) {
 	f.h.fake.SetHandler("release", func(w http.ResponseWriter, r *http.Request) { releaseSend(); fmt.Fprint(w, `{"ok":true}`) })
 	f.h.fake.SetHandler("sendMessage", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Text string `json:"text"`
+			Text   string `json:"text"`
+			ChatID int64  `json:"chat_id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		if body.Text == "<b>Browser DNS</b>" {
@@ -296,7 +297,7 @@ func TestE2E_ServiceSubscriptionBrowser(t *testing.T) {
 				return
 			}
 		}
-		if body.Text == "Browser failure" {
+		if body.Text == "Browser failure" && body.ChatID == -100940003 {
 			w.WriteHeader(403)
 			fmt.Fprint(w, `{"ok":false,"error_code":403}`)
 			return
@@ -306,6 +307,7 @@ func TestE2E_ServiceSubscriptionBrowser(t *testing.T) {
 	f.h.fake.RegisterBot("940003:browser-secret", "browser_bot", 940003)
 	f.h.fake.RegisterChat("940003:browser-secret", -100940003, "New browser group")
 	worker := gateway.NewService(f.h.store, newMemoryOutboundQueue(), gateway.NewTelegramHTTPClient(f.h.fake.URL()), "browser")
+	f.h.server.SetGatewayOperations(gateway.NewOperations(f.h.store, nil, nil, worker, nil, nil, nil))
 	worker.Start(context.Background())
 	t.Cleanup(worker.Stop)
 	t.Cleanup(releaseSend)

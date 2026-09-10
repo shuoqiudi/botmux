@@ -43,10 +43,15 @@ type ServiceDeliverySummary struct {
 }
 
 type ServiceNotificationDelivery struct {
-	ID           string `json:"delivery_id"`
-	Status       string `json:"status"`
-	ErrorClass   string `json:"error_class,omitempty"`
-	AttemptCount int    `json:"attempt_count"`
+	// Recipient identities are only exposed in administrator history.
+	SubscriptionID int64  `json:"subscription_id,omitempty"`
+	BotAccountID   int64  `json:"bot_account_id,omitempty"`
+	TelegramBotID  int64  `json:"telegram_bot_id,omitempty"`
+	ChatID         int64  `json:"chat_id,omitempty"`
+	ID             string `json:"delivery_id"`
+	Status         string `json:"status"`
+	ErrorClass     string `json:"error_class,omitempty"`
+	AttemptCount   int    `json:"attempt_count"`
 }
 
 // ServiceSubscription references a managed destination; credentials stay on its account.

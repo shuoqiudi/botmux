@@ -225,7 +225,7 @@ func (s *Store) ServiceNotificationHistory(ctx context.Context, serviceID int64,
 func loadServiceDeliveries(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, n *models.ServiceNotification) error {
-	rows, err := query.QueryContext(ctx, `SELECT d.id,d.status,d.safe_error_class,d.attempt_count FROM gateway_service_recipients p JOIN gateway_deliveries d ON d.id=p.delivery_id WHERE p.notification_id=? ORDER BY p.subscription_id`, n.ID)
+	rows, err := query.QueryContext(ctx, `SELECT d.id,d.status,d.safe_error_class,d.attempt_count,p.subscription_id,p.bot_account_id,p.telegram_bot_id,p.chat_id FROM gateway_service_recipients p JOIN gateway_deliveries d ON d.id=p.delivery_id WHERE p.notification_id=? ORDER BY p.subscription_id`, n.ID)
 	if err != nil {
 		return err
 	}
@@ -237,7 +237,7 @@ func loadServiceDeliveries(ctx context.Context, query interface {
 	}
 	for rows.Next() {
 		var d models.ServiceNotificationDelivery
-		if err := rows.Scan(&d.ID, &d.Status, &d.ErrorClass, &d.AttemptCount); err != nil {
+		if err := rows.Scan(&d.ID, &d.Status, &d.ErrorClass, &d.AttemptCount, &d.SubscriptionID, &d.BotAccountID, &d.TelegramBotID, &d.ChatID); err != nil {
 			return err
 		}
 		n.Deliveries = append(n.Deliveries, d)

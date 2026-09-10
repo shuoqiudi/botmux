@@ -192,6 +192,9 @@ func (s *Store) RotateBotAccount(id, expected int64, name, username, token, acto
 	if err != nil {
 		return err
 	}
+	if err := s.validateServiceRecipients(tx); err != nil {
+		return err
+	}
 	if err := appendGatewayAudit(tx, 0, current+1, "admin", actorID, "bot_token.rotate", map[string]any{"bot_account_id": id, "token_changed": token != ""}); err != nil {
 		return err
 	}
@@ -271,6 +274,9 @@ func (s *Store) MigrateTelegramDestination(d models.TelegramDestination, expecte
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return ErrRevisionConflict
+	}
+	if err := s.validateServiceRecipients(tx); err != nil {
+		return err
 	}
 	if err := appendGatewayAudit(tx, 0, current+1, "admin", actorID, "destination.migrate", map[string]any{"destination_id": d.ID, "chat_changed": true}); err != nil {
 		return err

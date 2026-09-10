@@ -15,6 +15,7 @@ type ServicePermissions struct {
 
 type NotificationService struct {
 	ID                int64  `json:"id"`
+	Revision          int64  `json:"revision"`
 	WorkloadID        int64  `json:"workload_id"`
 	Source            string `json:"source"`
 	Fingerprint       string `json:"fingerprint"`
@@ -42,6 +43,26 @@ type ServiceDeliverySummary struct {
 }
 
 type ServiceNotificationDelivery struct {
-	ID     string `json:"delivery_id"`
-	Status string `json:"status"`
+	ID           string `json:"delivery_id"`
+	Status       string `json:"status"`
+	ErrorClass   string `json:"error_class,omitempty"`
+	AttemptCount int    `json:"attempt_count"`
+}
+
+// ServiceSubscription references a managed destination; credentials stay on its account.
+type ServiceSubscription struct {
+	ID              int64  `json:"id"`
+	DestinationID   int64  `json:"destination_id"`
+	BotAccountID    int64  `json:"bot_account_id"`
+	BotName         string `json:"bot_name"`
+	DestinationName string `json:"destination_name"`
+	ChatTitle       string `json:"chat_title"`
+	Active          bool   `json:"active"`
+}
+
+// ServiceEnqueue records durable queue work. Generation zero is the original
+// append; positive generations identify an operator-requested DLQ replay.
+type ServiceEnqueue struct {
+	DeliveryID       string
+	ReplayGeneration int
 }

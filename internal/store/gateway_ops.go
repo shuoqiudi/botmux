@@ -207,8 +207,8 @@ func attemptStatus(class, ended string) string {
 	return "failed"
 }
 
-const gatewayDLQUnion = `SELECT q.delivery_id,r.route_key,'outbound',q.state,q.error_class,q.attempt_count,q.replay_count,q.entered_at,q.acted_at
-	FROM gateway_dlq q JOIN gateway_business_routes r ON r.id=q.route_id
+const gatewayDLQUnion = `SELECT q.delivery_id,COALESCE(r.route_key,'') AS route_key,'outbound',q.state,q.error_class,q.attempt_count,q.replay_count,q.entered_at,q.acted_at
+	FROM gateway_dlq q LEFT JOIN gateway_business_routes r ON r.id=q.route_id
 	UNION ALL
 	SELECT q.delivery_id,r.route_key,'inbound',q.state,q.error_class,q.attempt_count,q.replay_count,q.entered_at,q.acted_at
 	FROM gateway_inbound_dlq q JOIN gateway_business_routes r ON r.id=q.route_id`
@@ -280,8 +280,13 @@ func (s *Store) PrepareGatewayDLQReplay(ctx context.Context, deliveryID, actorID
 		if err != nil {
 			return nil, false, err
 		}
+		if item.Direction == models.GatewayDirectionOutbound {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_service_outbox(delivery_id,replay_generation) SELECT delivery_id,? FROM gateway_service_recipients WHERE delivery_id=? ON CONFLICT(delivery_id) DO UPDATE SET replay_generation=excluded.replay_generation`, item.ReplayCount, deliveryID); err != nil {
+				return nil, false, err
+			}
+		}
 		var routeID, revision int64
-		if err := tx.QueryRowContext(ctx, `SELECT id,revision FROM gateway_business_routes WHERE route_key=?`, item.RouteKey).Scan(&routeID, &revision); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT id FROM gateway_business_routes WHERE route_key=?),0),COALESCE((SELECT revision FROM gateway_business_routes WHERE route_key=?),0)`, item.RouteKey, item.RouteKey).Scan(&routeID, &revision); err != nil {
 			return nil, false, err
 		}
 		if err := appendGatewayAudit(tx, routeID, revision, "operator", actorID, "dlq.replay", map[string]any{
@@ -358,7 +363,7 @@ func (s *Store) DiscardGatewayDLQ(ctx context.Context, deliveryID, actorID strin
 		return nil, false, err
 	}
 	var routeID, revision int64
-	if err := tx.QueryRowContext(ctx, `SELECT id,revision FROM gateway_business_routes WHERE route_key=?`, item.RouteKey).Scan(&routeID, &revision); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT id FROM gateway_business_routes WHERE route_key=?),0),COALESCE((SELECT revision FROM gateway_business_routes WHERE route_key=?),0)`, item.RouteKey, item.RouteKey).Scan(&routeID, &revision); err != nil {
 		return nil, false, err
 	}
 	if err := appendGatewayAudit(tx, routeID, revision, "operator", actorID, "dlq.discard", map[string]any{

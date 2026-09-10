@@ -610,6 +610,11 @@ body::before {
 }
 .route-actions .btn { padding: 3px 8px; font-size: 9px; border: none; }
 
+#notificationServiceDetail h4 { margin: 16px 0 8px; }
+#notificationServiceDetail p { margin: 8px 0; }
+#notificationServiceDetail form > label { display: flex; flex: 1 1 180px; flex-direction: column; gap: 6px; color: var(--text2); }
+#notificationServiceDetail summary { cursor: pointer; color: var(--cyan); padding: 8px 0; }
+
 /* Route modal enhancements */
 .route-modal-flow-preview {
   margin: 12px 0 6px;
@@ -4481,8 +4486,11 @@ let logsEventSource = null;
 let businessRoutesCache = [];
 let notificationServicesCache = [];
 let notificationServiceDetail = null;
+let serviceAccounts = [];
+let serviceDestinations = [];
 
 function resetNotificationServices() {
+  serviceAccounts = []; serviceDestinations = [];
   notificationServicesCache = [];
   notificationServiceDetail = null;
   closeNotificationServices();
@@ -4523,21 +4531,134 @@ async function loadNotificationService(id, before = '') {
   if (!canViewNotificationServices()) return;
   const user = currentUser;
   try {
-    const detail = await api(`/api/gateway/v1/services/${id}${before ? '?before='+encodeURIComponent(before) : ''}`);
+    const [detail,accounts,destinations] = await Promise.all([api(`/api/gateway/v1/services/${id}${before ? '?before='+encodeURIComponent(before) : ''}`),isAdmin()?api('/api/gateway/v1/bot-accounts'):Promise.resolve([]),isAdmin()?api('/api/gateway/v1/destinations'):Promise.resolve([])]);
     if (currentUser !== user) return;
     if (before && notificationServiceDetail && notificationServiceDetail.service.id === id) detail.notifications = notificationServiceDetail.notifications.concat(detail.notifications);
+    serviceAccounts=accounts;serviceDestinations=destinations;
     notificationServiceDetail = detail; renderNotificationServiceDetail();
   } catch(e) { if (currentUser === user) document.getElementById('notificationServiceDetail').textContent = e.message; }
+}
+function serviceStatus(status) {
+  return t('service_status_' + status);
+}
+function serviceAccountOptions(withNew = false) {
+  return (withNew ? `<option value="">${t('service_new_bot')}</option>` : '') + serviceAccounts.map(a => `<option value="${a.id}">${esc(a.name)} (@${esc(a.username)})</option>`).join('');
+}
+function renderServiceSubscriptionForms() {
+  return `<h4>${t('service_add_subscription')}</h4>
+    <form class="modal-field" id="serviceSubscriptionForm" onsubmit="event.preventDefault();saveServiceSubscription()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+      <label>${t('service_bot')}<select class="route-modal-select" id="serviceSubscriptionBot" required onchange="updateServiceDestinationOptions()">${serviceAccountOptions()}</select></label>
+      <label>${t('service_destination')}<select class="route-modal-select" id="serviceSubscriptionDestination" required></select></label>
+      <button class="btn btn-sm" type="submit">${t('service_add_subscription')}</button>
+    </form>
+    <p>${t('service_subscription_help')}</p>
+    <details id="serviceTargetConfig"><summary>${t('service_configure_targets')}</summary>
+      <form class="modal-field" id="serviceAccountForm" onsubmit="event.preventDefault();saveServiceAccount()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0">
+        <label>${t('service_bot')}<select class="route-modal-select" id="serviceAccountEdit" onchange="editServiceAccount()">${serviceAccountOptions(true)}</select></label>
+        <label>${t('service_name')}<input type="text" id="serviceAccountName" required maxlength="256"></label>
+        <label>${t('service_token')}<input id="serviceAccountToken" type="password" autocomplete="new-password" required></label>
+        <button class="btn btn-sm" type="submit">${t('service_validate_save')}</button>
+      </form>
+      <form class="modal-field" id="serviceTargetForm" onsubmit="event.preventDefault();saveServiceTarget()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0">
+        <label>${t('service_destination')}<select class="route-modal-select" id="serviceDestinationEdit" onchange="editServiceTarget()"><option value="">${t('service_new_destination')}</option>${serviceDestinations.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></label>
+        <label>${t('service_bot')}<select class="route-modal-select" id="serviceTargetBot" required>${serviceAccountOptions()}</select></label>
+        <label>${t('service_name')}<input type="text" id="serviceTargetName" required maxlength="256"></label>
+        <label>${t('chat_id')}<input id="serviceTargetChat" type="number" required step="1"></label>
+        <button class="btn btn-sm" type="submit">${t('service_validate_save')}</button>
+      </form>
+    </details><p id="serviceConfigResult" role="status"></p>`;
 }
 function renderNotificationServiceDetail() {
   const el = document.getElementById('notificationServiceDetail');
   if (!notificationServiceDetail || !canViewNotificationServices()) { el.innerHTML = ''; return; }
-  const {service,notifications,next_before} = notificationServiceDetail;
-  el.innerHTML = `<h3>${esc(service.display_name)}</h3><p>${t('notification_no_subscribers_help')}</p>` + notifications.map(n => `<div class="route-item" style="display:block;margin-bottom:8px;padding:12px;overflow-wrap:anywhere">
-    <strong>${t('notification_no_subscribers')}</strong><div>${esc(n.received_at)}</div><div>${t('notification_id')}: ${esc(n.notification_id)}</div>
-    <div>${t('notification_subscriptions')}: ${n.subscription_count}</div>
-    ${isAdmin() && n.text !== undefined ? `<pre style="white-space:pre-wrap;font-family:inherit">${esc(n.text)}</pre>` : ''}</div>`).join('') +
-    (next_before ? `<button class="btn btn-sm" onclick="loadNotificationService(${service.id},'${esc(next_before)}')">${t('notification_more')}</button>` : '');
+  const {service,subscriptions,notifications,next_before} = notificationServiceDetail;
+  el.innerHTML = `<h3>${esc(service.display_name)}</h3>
+    <button class="btn btn-sm" id="serviceDetailRefresh" onclick="loadNotificationService(${service.id})">${t('refresh')}</button>
+    <h4>${t('notification_subscriptions')}</h4>` + subscriptions.map(p=>`<div class="route-item" style="padding:8px;margin:8px 0"><div class="route-body">${esc(p.bot_name)} → ${esc(p.destination_name)} (${esc(p.chat_title)})</div>
+      ${isAdmin()?`<button class="btn btn-sm service-subscription-cancel" onclick="cancelServiceSubscription(${p.id})">${t('service_cancel_subscription')}</button>`:''}</div>`).join('') +
+    (isAdmin()?renderServiceSubscriptionForms():'') +
+    `<h4>${t('service_notifications_history')}</h4>` + notifications.map(n=>`<div class="route-item" style="display:block;margin-bottom:8px;padding:12px;overflow-wrap:anywhere">
+      <strong>${n.delivery_summary.status==='no_subscribers'?t('notification_no_subscribers'):serviceStatus(n.delivery_summary.status)}</strong>
+      <div>${esc(n.received_at)}</div><div>${t('notification_id')}: ${esc(n.notification_id)}</div><div>${t('notification_subscriptions')}: ${n.subscription_count}</div>
+      ${n.status==='no_subscribers'?`<p>${t('notification_no_subscribers_help')}</p>`:''}
+      ${n.deliveries.map(d=>`<div><code>${esc(d.delivery_id)}</code> · ${esc(serviceStatus(d.status))} · ${t('gateway_attempts')}: ${d.attempt_count}${d.error_class?` · ${esc(d.error_class)}`:''}
+        ${d.status==='dead-lettered'?`<button class="btn btn-sm" onclick="serviceDeliveryAction('${esc(d.delivery_id)}','replay')">${t('gateway_replay')}</button><button class="btn btn-sm" onclick="serviceDeliveryAction('${esc(d.delivery_id)}','discard')">${t('gateway_discard')}</button>`:''}</div>`).join('')}
+      ${isAdmin() && n.text !== undefined?`<pre style="white-space:pre-wrap;font-family:inherit">${esc(n.text)}</pre>`:''}</div>`).join('') +
+    (next_before?`<button class="btn btn-sm" onclick="loadNotificationService(${service.id},'${esc(next_before)}')">${t('notification_more')}</button>`:'');
+  if (isAdmin()) updateServiceDestinationOptions();
+}
+function updateServiceDestinationOptions() {
+  const bot = Number(document.getElementById('serviceSubscriptionBot').value);
+  document.getElementById('serviceSubscriptionDestination').innerHTML = serviceDestinations.filter(d=>d.bot_account_id===bot && d.status==='active').map(d=>`<option value="${d.id}">${esc(d.name)} (${esc(d.chat_title)} · ${d.chat_id})</option>`).join('');
+}
+async function refreshServiceConfiguration(id, message = '') {
+  await loadNotificationService(id);
+  const user=currentUser;
+  const items=await api('/api/gateway/v1/services');
+  if(currentUser!==user || !canViewNotificationServices()) return;
+  notificationServicesCache=items;renderNotificationServices();
+  const result=document.getElementById('serviceConfigResult');if(result)result.textContent=message;
+}
+async function saveServiceSubscription() {
+  if(!isAdmin())return;
+  const {id,revision}=notificationServiceDetail.service;
+  const destination_id=Number(document.getElementById('serviceSubscriptionDestination').value);
+  if(!destination_id)return;
+  try {
+    await api(`/api/gateway/v1/services/${id}/subscriptions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,destination_id})});
+    await refreshServiceConfiguration(id,t('service_subscription_saved'));
+  } catch(e){toast(e.message,'error');}
+}
+async function cancelServiceSubscription(subscription) {
+  if(!isAdmin())return;
+  const {id,revision}=notificationServiceDetail.service;
+  try {
+    await api(`/api/gateway/v1/services/${id}/subscriptions/${subscription}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision})});
+    await refreshServiceConfiguration(id,t('service_subscription_cancelled'));
+  } catch(e){toast(e.message,'error');}
+}
+function editServiceAccount() {
+  const a=serviceAccounts.find(a=>a.id===Number(document.getElementById('serviceAccountEdit').value));
+  document.getElementById('serviceAccountName').value=a?a.name:'';
+  document.getElementById('serviceAccountToken').value='';
+  document.getElementById('serviceAccountToken').required=!a;
+}
+function editServiceTarget() {
+  const d=serviceDestinations.find(d=>d.id===Number(document.getElementById('serviceDestinationEdit').value));
+  document.getElementById('serviceTargetName').value=d?d.name:'';
+  document.getElementById('serviceTargetChat').value=d?d.chat_id:'';
+  if(d)document.getElementById('serviceTargetBot').value=String(d.bot_account_id);
+}
+async function saveServiceAccount() {
+  if(!isAdmin())return;
+  const id=notificationServiceDetail.service.id;
+  const a=serviceAccounts.find(a=>a.id===Number(document.getElementById('serviceAccountEdit').value));
+  const input={name:document.getElementById('serviceAccountName').value.trim(),token:document.getElementById('serviceAccountToken').value};
+  if(a)input.expected_revision=a.revision;
+  try {
+    await api('/api/gateway/v1/bot-accounts'+(a?'/'+a.id:''),{method:a?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});
+    await refreshServiceConfiguration(id,t('service_target_saved'));
+  } catch(e){toast(e.message,'error');}
+}
+async function saveServiceTarget() {
+  if(!isAdmin())return;
+  const id=notificationServiceDetail.service.id;
+  const d=serviceDestinations.find(d=>d.id===Number(document.getElementById('serviceDestinationEdit').value));
+  const input={name:document.getElementById('serviceTargetName').value.trim(),bot_account_id:Number(document.getElementById('serviceTargetBot').value),chat_id:Number(document.getElementById('serviceTargetChat').value)};
+  if(d)input.expected_revision=d.revision;
+  try {
+    await api('/api/gateway/v1/destinations'+(d?'/'+d.id:''),{method:d?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});
+    await refreshServiceConfiguration(id,t('service_target_saved'));
+  } catch(e){toast(e.message,'error');}
+}
+async function serviceDeliveryAction(id,action) {
+  if(!canViewNotificationServices())return;
+  const service=notificationServiceDetail.service.id;
+  if(!confirm(t(action==='replay'?'gateway_replay_confirm':'gateway_discard_confirm')))return;
+  try {
+    await api(`/api/gateway/v1/ops/dlq/${encodeURIComponent(id)}/${action}`,{method:'POST'});
+    await loadNotificationService(service);
+  } catch(e){toast(e.message,'error');}
 }
 
 async function saveServiceGrants(id, revision) {

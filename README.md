@@ -825,4 +825,4 @@ Workloads publish one notification by fingerprint to multiple Bot/chat subscript
 
 The subscription chat picker lists all chats already known to the selected Bot together with manually registered destinations. Already subscribed chats are marked. Selecting a new chat and clicking Subscribe validates and registers its destination; browsing the list does not create a subscription.
 
-Configuration backup and cross-server restore: see [the script guide](docs/gateway/configuration-backup.md) for Bot and chat-target export/restore commands.
+Configuration backup and cross-server restore: see [the script guide](docs/gateway/configuration-backup.md) for Bot, chat-target and conditional-forwarding export/restore commands.

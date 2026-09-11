@@ -86,17 +86,19 @@ def main():
         finally:
             if temp is not None:
                 os.unlink(temp)
-        print(f"Exported {len(document['bots'])} Bots and {len(document['destinations'])} destinations")
+        print(f"Exported {len(document['bots'])} Bots and {len(document['destinations'])} destinations, "
+              f"{len(document['conditional_routes'])} conditional routes")
     else:
         if not isinstance(document, dict) or document.get("configuration_committed") is not True:
             raise ValueError("invalid restore receipt")
         # Print only typed counts/status; never echo arbitrary response text.
         bots, destinations = document.get("bots"), document.get("destinations")
-        if type(bots) is not int or type(destinations) is not int:
+        routes = document.get("conditional_routes", 0)
+        if type(bots) is not int or type(destinations) is not int or type(routes) is not int:
             raise ValueError("invalid restore counts")
         loaded = document.get("runtime_loaded") is True
         print(f"Configuration committed: {bots} Bots, {destinations} destinations; "
-              f"runtime loaded: {loaded}; external health: not verified")
+              f"{routes} conditional routes; runtime loaded: {loaded}; external health: not verified")
         if not loaded:
             refs = document.get("runtime_failed_refs")
             expected = {bot.get("ref") for bot in snapshot.get("bots", []) if isinstance(bot, dict)}
@@ -123,7 +125,9 @@ if __name__ == "__main__":
                 fields = ("schema_version|bots|destinations|conditional_routes|notification_services|"
                           "subscriptions|business_routes|workloads|ref|bot_ref|name|token|username|"
                           "description|manage_enabled|proxy_enabled|long_poll_enabled|disabled|"
-                          "backend_url|secret_token|polling_timeout|source|chat_id|status")
+                          "backend_url|secret_token|polling_timeout|source|chat_id|status|"
+                          "source_bot_ref|target_bot_ref|source_chat_id|target_chat_id|"
+                          "condition_type|condition_value|action|enabled")
                 if isinstance(location, str) and re.fullmatch(
                     r"snapshot(?:\.(?:" + fields + r")(?:\[[0-9]+\])?)*", location
                 ):

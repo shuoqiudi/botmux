@@ -35,14 +35,14 @@ func (e *FieldError) Unwrap() error { return e.Kind }
 // Reserved collections share the document and the Store transaction boundary.
 // They stay empty until their format and restore support are implemented.
 type Snapshot struct {
-	SchemaVersion        int               `json:"schema_version"`
-	Bots                 []Bot             `json:"bots"`
-	Destinations         []Destination     `json:"destinations"`
-	ConditionalRoutes    []json.RawMessage `json:"conditional_routes"`
-	NotificationServices []json.RawMessage `json:"notification_services"`
-	Subscriptions        []json.RawMessage `json:"subscriptions"`
-	BusinessRoutes       []json.RawMessage `json:"business_routes"`
-	Workloads            []json.RawMessage `json:"workloads"`
+	SchemaVersion        int                `json:"schema_version"`
+	Bots                 []Bot              `json:"bots"`
+	Destinations         []Destination      `json:"destinations"`
+	ConditionalRoutes    []ConditionalRoute `json:"conditional_routes"`
+	NotificationServices []json.RawMessage  `json:"notification_services"`
+	Subscriptions        []json.RawMessage  `json:"subscriptions"`
+	BusinessRoutes       []json.RawMessage  `json:"business_routes"`
+	Workloads            []json.RawMessage  `json:"workloads"`
 }
 type Bot struct {
 	Ref             string `json:"ref"`
@@ -66,7 +66,23 @@ type Destination struct {
 	ChatID string `json:"chat_id"`
 	Status string `json:"status"`
 }
+
+// ConditionalRoutes execute in array order. Source chat "0" means any chat;
+// target chat "0" means the incoming chat.
+type ConditionalRoute struct {
+	Ref            string `json:"ref"`
+	SourceBotRef   string `json:"source_bot_ref"`
+	TargetBotRef   string `json:"target_bot_ref"`
+	SourceChatID   string `json:"source_chat_id"`
+	TargetChatID   string `json:"target_chat_id"`
+	ConditionType  string `json:"condition_type"`
+	ConditionValue string `json:"condition_value"`
+	Action         string `json:"action"`
+	Description    string `json:"description"`
+	Enabled        bool   `json:"enabled"`
+}
 type Receipt struct {
+	ConditionalRoutes      int      `json:"conditional_routes"`
 	Digest                 string   `json:"digest"`
 	Bots                   int      `json:"bots"`
 	Destinations           int      `json:"destinations"`
@@ -78,7 +94,7 @@ type Receipt struct {
 }
 
 func Empty() Snapshot {
-	return Snapshot{1, []Bot{}, []Destination{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}}
+	return Snapshot{1, []Bot{}, []Destination{}, []ConditionalRoute{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}}
 }
 
 // Decode rejects unknown, missing, null and duplicate fields, including nested
@@ -177,7 +193,7 @@ func (s Snapshot) Validate() error {
 	if s.SchemaVersion != 1 {
 		return &FieldError{ErrInvalid, "snapshot.schema_version", "must be 1"}
 	}
-	if len(s.ConditionalRoutes)+len(s.NotificationServices)+len(s.Subscriptions)+len(s.BusinessRoutes)+len(s.Workloads) > 0 {
+	if len(s.NotificationServices)+len(s.Subscriptions)+len(s.BusinessRoutes)+len(s.Workloads) > 0 {
 		return ErrUnsupported
 	}
 	refs := map[string]bool{}
@@ -212,9 +228,50 @@ func (s Snapshot) Validate() error {
 		}
 		targets[d.Ref] = true
 	}
+	routeRefs := map[string]bool{}
+	for i, r := range s.ConditionalRoutes {
+		fieldError := func(field, reason string) error {
+			return &FieldError{ErrInvalid, fmt.Sprintf("snapshot.conditional_routes[%d].%s", i, field), reason}
+		}
+		if !validRef.MatchString(r.Ref) || routeRefs[r.Ref] {
+			return fieldError("ref", "invalid or duplicate")
+		}
+		routeRefs[r.Ref] = true
+		if !refs[r.SourceBotRef] {
+			return fieldError("source_bot_ref", "missing")
+		}
+		if !refs[r.TargetBotRef] {
+			return fieldError("target_bot_ref", "missing")
+		}
+		for _, chat := range []struct{ field, value string }{{"source_chat_id", r.SourceChatID}, {"target_chat_id", r.TargetChatID}} {
+			id, err := strconv.ParseInt(chat.value, 10, 64)
+			if err != nil || strconv.FormatInt(id, 10) != chat.value {
+				return fieldError(chat.field, "invalid")
+			}
+		}
+		switch r.ConditionType {
+		case "text":
+			if _, err := regexp.Compile("(?i)" + r.ConditionValue); err != nil {
+				return fieldError("condition_value", "invalid regular expression")
+			}
+		case "user_id", "chat_id":
+			if _, err := strconv.ParseInt(r.ConditionValue, 10, 64); err != nil {
+				return fieldError("condition_value", "invalid integer")
+			}
+		default:
+			return fieldError("condition_type", "unsupported")
+		}
+		switch r.Action {
+		case "forward", "copy", "drop":
+		default:
+			return fieldError("action", "unsupported")
+		}
+	}
 	return nil
 }
 func (s Snapshot) Canonical() ([]byte, string, error) {
+	// Route order is semantic: never sort by random configuration identity.
+	s.ConditionalRoutes = append([]ConditionalRoute{}, s.ConditionalRoutes...)
 	s.Bots = append([]Bot{}, s.Bots...)
 	s.Destinations = append([]Destination{}, s.Destinations...)
 	sort.Slice(s.Bots, func(i, j int) bool { return s.Bots[i].Ref < s.Bots[j].Ref })

@@ -1,5 +1,24 @@
 package models
 
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+// ValidServiceLabel validates portable service fingerprints and display names.
+func ValidServiceLabel(value string, limit int) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) < 1 || utf8.RuneCountInString(value) > limit || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return false
+		}
+	}
+	return true
+}
+
 // ServiceNotificationRequest is the producer contract, independent of Telegram targets.
 type ServiceNotificationRequest struct {
 	Fingerprint string  `json:"fingerprint"`

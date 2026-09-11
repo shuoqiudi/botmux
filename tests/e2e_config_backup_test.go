@@ -441,7 +441,7 @@ func TestE2E_ConfigTransactionRollbackAndRestartReceipt(t *testing.T) {
 }
 
 func TestE2E_ConfigRejectsUnsupportedSourceConfiguration(t *testing.T) {
-	for _, kind := range []string{"conditional routes", "workloads", "services", "subscriptions", "business routes"} {
+	for _, kind := range []string{"conditional routes", "services", "subscriptions", "business routes"} {
 		t.Run(kind, func(t *testing.T) {
 			h := setupE2E(t, withHTTPServer())
 			file := filepath.Join(t.TempDir(), "backup.json")
@@ -453,7 +453,6 @@ func TestE2E_ConfigRejectsUnsupportedSourceConfiguration(t *testing.T) {
 			// silently omitted from a snapshot advertised as complete.
 			queries := map[string]string{
 				"conditional routes": `INSERT INTO routes(source_bot_id,target_bot_id,enabled) VALUES(99,99,0)`,
-				"workloads":          `INSERT INTO gateway_workloads(name,status,created_at,updated_at) VALUES('Disabled','disabled','','')`,
 				"services":           `INSERT INTO gateway_notification_services(workload_id,fingerprint,display_name,last_received_at) VALUES(-1234,'orphan','Orphan','')`,
 				"subscriptions":      `INSERT INTO gateway_service_subscriptions(service_id,destination_id,active,created_at) VALUES(99,99,0,'')`,
 				"business routes":    `INSERT INTO gateway_business_routes(route_key,display_name,bot_account_id,destination_id,enabled,created_at,updated_at) VALUES('disabled','Disabled',99,99,0,'','')`,

@@ -32,17 +32,16 @@ type FieldError struct {
 func (e *FieldError) Error() string { return fmt.Sprintf("%s: %s %s", e.Kind, e.Path, e.Reason) }
 func (e *FieldError) Unwrap() error { return e.Kind }
 
-// Reserved collections share the document and the Store transaction boundary.
-// They stay empty until their format and restore support are implemented.
+// All supported collections share the document and Store transaction boundary.
 type Snapshot struct {
-	SchemaVersion        int                `json:"schema_version"`
-	Bots                 []Bot              `json:"bots"`
-	Destinations         []Destination      `json:"destinations"`
-	ConditionalRoutes    []ConditionalRoute `json:"conditional_routes"`
-	NotificationServices []json.RawMessage  `json:"notification_services"`
-	Subscriptions        []json.RawMessage  `json:"subscriptions"`
-	BusinessRoutes       []json.RawMessage  `json:"business_routes"`
-	Workloads            []json.RawMessage  `json:"workloads"`
+	SchemaVersion        int                   `json:"schema_version"`
+	Bots                 []Bot                 `json:"bots"`
+	Destinations         []Destination         `json:"destinations"`
+	ConditionalRoutes    []ConditionalRoute    `json:"conditional_routes"`
+	NotificationServices []NotificationService `json:"notification_services"`
+	Subscriptions        []Subscription        `json:"subscriptions"`
+	BusinessRoutes       []json.RawMessage     `json:"business_routes"`
+	Workloads            []Workload            `json:"workloads"`
 }
 type Bot struct {
 	Ref             string `json:"ref"`
@@ -82,6 +81,9 @@ type ConditionalRoute struct {
 	Enabled        bool   `json:"enabled"`
 }
 type Receipt struct {
+	Workloads              int      `json:"workloads"`
+	NotificationServices   int      `json:"notification_services"`
+	Subscriptions          int      `json:"subscriptions"`
 	ConditionalRoutes      int      `json:"conditional_routes"`
 	Digest                 string   `json:"digest"`
 	Bots                   int      `json:"bots"`
@@ -94,7 +96,7 @@ type Receipt struct {
 }
 
 func Empty() Snapshot {
-	return Snapshot{1, []Bot{}, []Destination{}, []ConditionalRoute{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}, []json.RawMessage{}}
+	return Snapshot{1, []Bot{}, []Destination{}, []ConditionalRoute{}, []NotificationService{}, []Subscription{}, []json.RawMessage{}, []Workload{}}
 }
 
 // Decode rejects unknown, missing, null and duplicate fields, including nested
@@ -193,7 +195,7 @@ func (s Snapshot) Validate() error {
 	if s.SchemaVersion != 1 {
 		return &FieldError{ErrInvalid, "snapshot.schema_version", "must be 1"}
 	}
-	if len(s.NotificationServices)+len(s.Subscriptions)+len(s.BusinessRoutes)+len(s.Workloads) > 0 {
+	if len(s.BusinessRoutes) > 0 {
 		return ErrUnsupported
 	}
 	refs := map[string]bool{}
@@ -267,9 +269,10 @@ func (s Snapshot) Validate() error {
 			return fieldError("action", "unsupported")
 		}
 	}
-	return nil
+	return s.validateNotifications()
 }
 func (s Snapshot) Canonical() ([]byte, string, error) {
+	s = s.canonicalNotifications()
 	// Route order is semantic: never sort by random configuration identity.
 	s.ConditionalRoutes = append([]ConditionalRoute{}, s.ConditionalRoutes...)
 	s.Bots = append([]Bot{}, s.Bots...)

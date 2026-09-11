@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Store) migrateConfigurationBackup() error {
-	for _, table := range []string{"bots", "gateway_telegram_destinations", "routes"} {
+	for _, table := range []string{"bots", "gateway_telegram_destinations", "routes", "gateway_workloads", "gateway_service_subscriptions"} {
 		if err := addColumnIfMissing(s.db, table, "config_ref", "TEXT NOT NULL DEFAULT ''"); err != nil {
 			return err
 		}
@@ -20,7 +20,7 @@ func (s *Store) migrateConfigurationBackup() error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"bots", "gateway_telegram_destinations", "routes"} {
+	for _, table := range []string{"bots", "gateway_telegram_destinations", "routes", "gateway_workloads", "gateway_service_subscriptions"} {
 		// Existing and future objects receive a persisted random identity. Export is
 		// read-only; credential rotation and activity never change this identity.
 		_, err = tx.Exec(`UPDATE ` + table + ` SET config_ref=lower(hex(randomblob(16))) WHERE config_ref='';
@@ -53,13 +53,9 @@ func (s *Store) ExportConfiguration() (configbackup.Snapshot, error) {
 }
 
 func unsupportedConfigurationTx(tx *sql.Tx) error {
-	for _, table := range []string{"gateway_notification_services", "gateway_service_subscriptions", "gateway_business_routes", "gateway_workloads", "gateway_workload_credentials", "gateway_route_permissions"} {
+	for _, table := range []string{"gateway_business_routes", "gateway_route_permissions"} {
 		var nonempty bool
 		query := `SELECT EXISTS(SELECT 1 FROM ` + table + `)`
-		if table == "gateway_workloads" {
-			// The embedded adapter is a system initialization record, not a source.
-			query = `SELECT EXISTS(SELECT 1 FROM gateway_workloads WHERE NOT (id=-1234 AND name='Embedded Gateway Adapter' AND status='active' AND service_publish=0 AND service_query=0))`
-		}
 		if err := tx.QueryRow(query).Scan(&nonempty); err != nil {
 			return err
 		}
@@ -143,13 +139,16 @@ func (s *Store) exportConfigurationTx(tx *sql.Tx) (configbackup.Snapshot, error)
 	if err != nil {
 		return result, err
 	}
+	if err := exportNotificationsTx(tx, &result); err != nil {
+		return result, err
+	}
 	return result, result.Validate()
 }
 
 // RestoreConfiguration prepares and validates the whole snapshot before entering
 // a single configuration/receipt transaction. Runtime loading belongs to Server.
 func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configbackup.Receipt, error) {
-	receipt := configbackup.Receipt{RuntimeFailedRefs: []string{}, ExternalHealth: "not_verified"}
+	receipt := configbackup.Receipt{Workloads: len(snapshot.Workloads), NotificationServices: len(snapshot.NotificationServices), Subscriptions: len(snapshot.Subscriptions), RuntimeFailedRefs: []string{}, ExternalHealth: "not_verified"}
 	if err := snapshot.Validate(); err != nil {
 		return receipt, err
 	}
@@ -217,7 +216,7 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM gateway_bot_accounts`).Scan(&accountCount); err != nil {
 		return receipt, err
 	}
-	if len(current.Bots)+len(current.Destinations)+len(current.ConditionalRoutes)+accountCount > 0 {
+	if len(current.Bots)+len(current.Destinations)+len(current.ConditionalRoutes)+len(current.Workloads)+len(current.NotificationServices)+len(current.Subscriptions)+accountCount > 0 {
 		return receipt, configbackup.ErrConflict
 	}
 	botIDs := map[string]int64{}
@@ -264,6 +263,9 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 			r.Ref, botIDs[r.SourceBotRef], botIDs[r.TargetBotRef], r.SourceChatID, r.TargetChatID, r.ConditionType, r.ConditionValue, r.Action, r.Description, r.Enabled, nowRFC3339()); err != nil {
 			return receipt, err
 		}
+	}
+	if err = restoreNotificationsTx(tx, snapshot); err != nil {
+		return receipt, err
 	}
 	if _, err = tx.Exec(`INSERT INTO configuration_restores(digest,bots,destinations) VALUES(?,?,?)`, digest, len(snapshot.Bots), len(snapshot.Destinations)); err != nil {
 		return receipt, err

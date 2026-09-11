@@ -1,9 +1,10 @@
-# Bot, chat-target and conditional-routing configuration backups
+# Botmux configuration backups
 
-Issues #22–#23 support all configured Bots, explicit Telegram destinations and
-conditional forwarding rules. Notification services/subscriptions and
-workload/business-route configuration remain reserved: export and restore reject
-nonempty collections in those categories. Messages, discovered chats, counters,
+Issues #22–#24 support Bots, explicit Telegram destinations, conditional forwarding
+rules, notification services/subscriptions and workload sources with credential
+verifiers and service permissions. Business routes and nonempty workload route
+permissions remain unsupported: export and restore reject the entire configuration
+if either is present. Messages, discovered chats, counters,
 timestamps and platform login accounts are not backed up. Independent LLM routing,
 bridges and platform settings are outside this format.
 
@@ -35,7 +36,8 @@ before atomic replacement and new files have mode 0600.
 
 The target must have no business configuration; its own admin accounts and instance
 key remain in place. Restore remaps stable configuration references to local IDs and
-seals credentials using the target key. Repeating a snapshot returns its durable
+seals plaintext Bot/webhook secrets using the target key. Workload authentication
+verifiers are installed unchanged; they are independent of the instance key. Repeating a snapshot returns its durable
 receipt only if the current configuration still matches. A changed target returns
 HTTP 409. Invalid formats/references return 400, unsupported configuration returns
 422, missing authentication returns 401, insufficient privileges return 403, and
@@ -106,3 +108,50 @@ configuration unchanged. LLM routing is not included.
 
 `tests/e2e_config_routes_test.go` covers rule round trips and live fake Telegram
 requests, duplicate identity and order, strict validation and transaction rollback.
+
+## Notification services and original workload credentials
+
+After migrating the notification chain to services, use the same script to move its
+configuration to an empty instance. A source with fingerprint
+`v2:incident:domains:dns` can retain subscriptions to both Operations and Backup
+chats. Restore resolves each `destination_ref` through its restored Bot and exact
+chat ID. The producer keeps its original workload credential and sends one new
+service notification; only current subscribers receive it. A different source with
+the same fingerprint remains a separate service, even without subscriptions.
+
+Each `workloads` entry contains `ref`, `name`, `status`, `service_permissions`
+(`publish` and `query` booleans), `route_permissions` (currently an empty array), and
+`credentials`. Each credential carries `name`, `algorithm: "sha256"`, a `verifier`
+(64 lowercase hexadecimal characters), and `enabled`. Route permissions reserve
+`route_key` and `action` fields for business-route restoration; any nonempty list
+currently fails with HTTP 422 instead of dropping authorization.
+
+Bot tokens and webhook secrets are plaintext recoverable secrets in this private
+backup. Workload credentials are different: Botmux only stores their SHA-256
+verification values and cannot export the original plaintext. Restore installs
+those values directly, without generating replacement keys or hashing them again.
+Keep the existing plaintext workload credential in the upstream secret store.
+Do **not** configure upstream to send the `verifier` as its Bearer token. Disabled
+sources, disabled credentials and credentials invalidated by rotation retain their
+invalid status. Workload credentials cannot access administrator backup APIs.
+
+`notification_services` entries contain `workload_ref`, the complete `fingerprint`
+and the current `display_name`. `subscriptions` entries contain a persistent `ref`,
+`workload_ref`, `fingerprint`, `destination_ref` and `active`. Cancelled subscriptions
+are preserved with `active: false`; destination disabled states are preserved too.
+Duplicate active physical Bot/chat recipients and dangling references reject the
+whole document, including all its Bots and sources. Services are rebuilt by source
+plus fingerprint; local database IDs and revisions are not copied.
+
+Old notifications, deliveries, delivery retries, business idempotency records,
+last-received/last-used timestamps and one-time import receipts are excluded.
+There is no historical resend. New notifications retain normal automatic service
+registration and display-name updates. Repeating a restore succeeds only while all
+current configuration matches its receipt; source permissions, credential rotation,
+service names or subscription changes cause HTTP 409. Runtime activity alone does
+not change the snapshot.
+
+The script and notification/permission integration tests in
+`tests/e2e_config_notifications_test.go` exercise original and revoked credentials,
+independent instance keys, source isolation, cancelled/disabled state, multiple
+Bot/chat recipients, rollback, strict validation and retries.

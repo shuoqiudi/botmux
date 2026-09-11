@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/skrashevich/botmux/internal/auth"
@@ -19,18 +18,6 @@ import (
 	"github.com/skrashevich/botmux/internal/models"
 	"github.com/skrashevich/botmux/internal/store"
 )
-
-func validServiceLabel(value string, limit int) bool {
-	if !utf8.ValidString(value) || utf8.RuneCountInString(value) < 1 || utf8.RuneCountInString(value) > limit || strings.TrimSpace(value) != value {
-		return false
-	}
-	for _, r := range value {
-		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
-			return false
-		}
-	}
-	return true
-}
 
 // encoding/json replaces unpaired UTF-16 surrogates with U+FFFD. Reject
 // them so malformed producer identities cannot silently collapse together.
@@ -126,7 +113,7 @@ func decodeServiceNotification(w http.ResponseWriter, r *http.Request) (models.S
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return input, gateway.ErrInvalidPayload
 	}
-	if !validServiceLabel(input.Fingerprint, 512) || (input.ServiceName != nil && !validServiceLabel(*input.ServiceName, 256)) {
+	if !models.ValidServiceLabel(input.Fingerprint, 512) || (input.ServiceName != nil && !models.ValidServiceLabel(*input.ServiceName, 256)) {
 		return input, gateway.ErrInvalidPayload
 	}
 	if err := gateway.ValidateSendMessage(gateway.SendMessage{Text: input.Text, ParseMode: input.ParseMode}); err != nil {

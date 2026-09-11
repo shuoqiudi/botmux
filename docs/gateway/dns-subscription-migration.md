@@ -165,3 +165,31 @@ Clean up archives/legacy resources only after the agreed rollback retention
 window, all ambiguous/in-flight work is resolved, evidence is retained, and an
 explicit cleanup decision identifies exact owned resources. This procedure does
 not authorize removal of unrelated business state.
+
+## Moving an existing service configuration to another instance (#24)
+
+Once the chain uses notification services, the administrator configuration backup
+transfers sources, service permissions, full fingerprints and subscriptions together
+with Bots and destinations. Follow
+[the configuration backup procedure](configuration-backup.md#notification-services-and-original-workload-credentials):
+
+```sh
+# BOTMUX_ADMIN_KEY identifies an administrator of the source instance.
+python3 scripts/config-backup.py export --url https://old-botmux.example --file settings/botmux.json
+# After the cutover barrier, use the target instance's administrator key.
+python3 scripts/config-backup.py restore --url https://new-botmux.example --file settings/botmux.json
+```
+
+The upstream producer keeps its existing plaintext workload key from its secret
+store. Botmux exports only an explicitly tagged SHA-256 verifier and enabled state;
+it neither recovers plaintext nor creates a replacement key. Sending the hash as a
+Bearer token fails. Plaintext Bot tokens and webhook secrets in the same backup
+are recoverable secrets, resealed using the new instance key. Keep this file private.
+
+This is configuration-only recovery into an empty target, without old notifications,
+idempotency history, recent-receive timestamps or historical sends. Verify a new
+notification using the original upstream credential and check every intended Bot/
+chat recipient before resuming producers. Remaining Business Routes or route grants
+fail export explicitly until business-route restore is supported. The original
+`POST /api/gateway/v1/services/import` API above keeps its existing semantics as the
+separate one-time pre-registration operation on the current instance.

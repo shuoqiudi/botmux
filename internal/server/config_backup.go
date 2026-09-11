@@ -89,6 +89,32 @@ func (s *Server) handleConfigRestore(w http.ResponseWriter, r *http.Request) {
 			receipt.RuntimeFailedRefs = append(receipt.RuntimeFailedRefs, b.Ref)
 		}
 	}
+	// Routes and services read committed configuration directly. Their workers
+	// belong to process startup; a restore must never register additional workers.
+	receipt.RuntimeFailedComponents = []string{}
+	outboundRequired := len(snapshot.NotificationServices) > 0
+	inboundRequired := false
+	for _, route := range snapshot.BusinessRoutes {
+		if route.Enabled && route.Status == "active" {
+			outboundRequired = outboundRequired || route.OutboundEnabled
+			inboundRequired = inboundRequired || route.InboundEnabled
+		}
+	}
+	if outboundRequired {
+		running := false
+		if s.gateway != nil {
+			running, _ = s.gateway.WorkerHealth()
+		}
+		if !running {
+			receipt.RuntimeFailedComponents = append(receipt.RuntimeFailedComponents, "gateway_outbound")
+		}
+	}
+	if inboundRequired && (s.proxy == nil || !s.proxy.InboundGatewayRunning()) {
+		receipt.RuntimeFailedComponents = append(receipt.RuntimeFailedComponents, "gateway_inbound")
+	}
+	if len(receipt.RuntimeFailedComponents) > 0 {
+		receipt.RuntimeLoaded = false
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(receipt)
 }

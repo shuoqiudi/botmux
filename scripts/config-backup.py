@@ -94,6 +94,9 @@ def main():
     else:
         if not isinstance(document, dict) or document.get("configuration_committed") is not True:
             raise ValueError("invalid restore receipt")
+        digest, replayed = document.get("digest"), document.get("replayed")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or type(replayed) is not bool:
+            raise ValueError("invalid restore identity")
         # Print only typed counts/status; never echo arbitrary response text.
         bots, destinations = document.get("bots"), document.get("destinations")
         routes = document.get("conditional_routes", 0)
@@ -108,10 +111,17 @@ def main():
               f"{routes} conditional routes; {business_routes} business routes; "
               f"{sources} sources, {services} services, "
               f"{subscriptions} subscriptions; runtime loaded: {loaded}; external health: not verified")
+        print(f"Snapshot: {digest}; replayed: {replayed}")
         if not loaded:
+            components = document.get("runtime_failed_components", [])
+            if isinstance(components, list) and all(
+                isinstance(component, str) and component in {"gateway_outbound", "gateway_inbound"}
+                for component in components
+            ) and components:
+                print("Runtime load failed for components: " + ", ".join(components), file=sys.stderr)
             refs = document.get("runtime_failed_refs")
             expected = {bot.get("ref") for bot in snapshot.get("bots", []) if isinstance(bot, dict)}
-            if isinstance(refs, list) and all(
+            if isinstance(refs, list) and refs and all(
                 isinstance(ref, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", ref) and ref in expected
                 for ref in refs
             ):

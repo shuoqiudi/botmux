@@ -81,19 +81,20 @@ type ConditionalRoute struct {
 	Enabled        bool   `json:"enabled"`
 }
 type Receipt struct {
-	BusinessRoutes         int      `json:"business_routes"`
-	Workloads              int      `json:"workloads"`
-	NotificationServices   int      `json:"notification_services"`
-	Subscriptions          int      `json:"subscriptions"`
-	ConditionalRoutes      int      `json:"conditional_routes"`
-	Digest                 string   `json:"digest"`
-	Bots                   int      `json:"bots"`
-	Destinations           int      `json:"destinations"`
-	ConfigurationCommitted bool     `json:"configuration_committed"`
-	Replayed               bool     `json:"replayed"`
-	RuntimeLoaded          bool     `json:"runtime_loaded"`
-	RuntimeFailedRefs      []string `json:"runtime_failed_refs"`
-	ExternalHealth         string   `json:"external_health"`
+	BusinessRoutes          int      `json:"business_routes"`
+	Workloads               int      `json:"workloads"`
+	NotificationServices    int      `json:"notification_services"`
+	Subscriptions           int      `json:"subscriptions"`
+	ConditionalRoutes       int      `json:"conditional_routes"`
+	Digest                  string   `json:"digest"`
+	Bots                    int      `json:"bots"`
+	Destinations            int      `json:"destinations"`
+	ConfigurationCommitted  bool     `json:"configuration_committed"`
+	Replayed                bool     `json:"replayed"`
+	RuntimeLoaded           bool     `json:"runtime_loaded"`
+	RuntimeFailedRefs       []string `json:"runtime_failed_refs"`
+	RuntimeFailedComponents []string `json:"runtime_failed_components"`
+	ExternalHealth          string   `json:"external_health"`
 }
 
 func Empty() Snapshot {

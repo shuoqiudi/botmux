@@ -22,6 +22,7 @@ import (
 func TestE2E_ConfigBusinessRouteScriptRoundTrip(t *testing.T) {
 	source := setupE2E(t, withHTTPServer())
 	target := setupE2E(t, withHTTPServer())
+	startConfigGateway(t, target)
 	const token = "950001:route-bot-secret"
 	const chatID int64 = -100950001
 	account, err := source.store.AddBotAccount(models.BotAccount{Name: "Routes", Token: token})
@@ -58,10 +59,6 @@ func TestE2E_ConfigBusinessRouteScriptRoundTrip(t *testing.T) {
 			t.Fatalf("restore: %v %s", err, out)
 		}
 	}
-	worker := gateway.NewService(target.store, newMemoryOutboundQueue(), gateway.NewTelegramHTTPClient(target.fake.URL()), "restored")
-	target.server.SetGatewayService(worker)
-	worker.Start(context.Background())
-	t.Cleanup(worker.Stop)
 	status, body := serviceCall(t, target, "POST", "/api/v1/routes/operations/messages", "original-route-credential", "new", map[string]any{"text": "restored business message"}, false)
 	if status != 202 {
 		t.Fatalf("send: %d %s", status, body)
@@ -182,7 +179,6 @@ func TestE2E_ConfigBusinessRouteBidirectionalAndSharedSource(t *testing.T) {
 	}
 	queue := gateway.NewRedisInboundQueueWithNamespace(client, "config-routes:"+uuid.NewString())
 	inbound := gateway.NewInbound(target.store, queue, nil, gateway.InboundConfig{PollInterval: 5 * time.Millisecond, ClaimMinIdle: 10 * time.Millisecond})
-	target.proxy.SetInboundGateway(inbound)
 	done := make(chan error, 1)
 	go func() { done <- inbound.Run(ctx) }()
 	defer func() { target.proxy.StopAll(); cancel(); <-done }()
@@ -201,6 +197,11 @@ func TestE2E_ConfigBusinessRouteBidirectionalAndSharedSource(t *testing.T) {
 	if !bytes.Contains(raw, []byte("backend-original-secret")) {
 		t.Fatal("backend secret missing")
 	}
+	if out, err := configScript(t, target, "restore", file); err == nil || !bytes.Contains(out, []byte("gateway_inbound")) {
+		t.Fatalf("missing inbound worker reported loaded: %v %s", err, out)
+	}
+	target.proxy.SetInboundGateway(inbound)
+	target.Eventually(func() bool { running, _ := inbound.WorkerHealth(); return running }, time.Second, "inbound worker started")
 	for i := 0; i < 2; i++ {
 		out, err := configScript(t, target, "restore", file)
 		if err != nil || !bytes.Contains(out, []byte("runtime loaded: True; external health: not verified")) {

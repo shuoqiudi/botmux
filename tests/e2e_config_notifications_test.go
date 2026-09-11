@@ -11,7 +11,6 @@ import (
 
 	"github.com/skrashevich/botmux/internal/auth"
 	"github.com/skrashevich/botmux/internal/configbackup"
-	"github.com/skrashevich/botmux/internal/gateway"
 	"github.com/skrashevich/botmux/internal/models"
 )
 
@@ -44,6 +43,7 @@ func TestE2E_ConfigNotificationScriptRoundTrip(t *testing.T) {
 	old := f.publish("old", "before restore")
 
 	target := setupE2E(t, withHTTPServer())
+	startConfigGateway(t, target)
 	target.fake.RegisterBot("940001:subscription-secret", "subscriber", 940001)
 	target.fake.RegisterChat("940001:subscription-secret", -100940001, "A")
 	target.fake.RegisterChat("940001:subscription-secret", -100940002, "B")
@@ -102,9 +102,6 @@ func TestE2E_ConfigNotificationScriptRoundTrip(t *testing.T) {
 	if n.SubscriptionCount != 3 || n.ID == old.ID {
 		t.Fatalf("new notification: %+v", n)
 	}
-	worker := gateway.NewService(target.store, newMemoryOutboundQueue(), gateway.NewTelegramHTTPClient(target.fake.URL()), "restore")
-	worker.Start(context.Background())
-	t.Cleanup(worker.Stop)
 	target.Eventually(func() bool { return len(target.fake.RequestsFor("sendMessage")) == 3 }, 5*time.Second, "restored delivery")
 	seen := map[string]bool{}
 	for _, r := range target.fake.RequestsFor("sendMessage") {
@@ -139,6 +136,7 @@ func TestE2E_ConfigNotificationScriptRoundTrip(t *testing.T) {
 func TestE2E_ConfigNotificationSourcesAndCredentials(t *testing.T) {
 	source := setupE2E(t, withHTTPServer())
 	target := setupE2E(t, withHTTPServer())
+	startConfigGateway(t, target)
 	create := func(name, credential string, publish, query bool) *models.GatewayWorkloadAdmin {
 		t.Helper()
 		w, err := source.store.CreateGatewayWorkloadAdmin(name, "initial", auth.HashAPIKey(credential), "test")

@@ -1,6 +1,6 @@
 # Botmux configuration backups
 
-Issues #22–#25 support Bots, explicit Telegram destinations, conditional forwarding
+Issues #22–#26 support Bots, explicit Telegram destinations, conditional forwarding
 rules, notification services/subscriptions, business routes and workload sources
 with credential verifiers, service permissions and per-route action permissions. Messages, discovered chats, counters,
 timestamps and platform login accounts are not backed up. Independent LLM routing,
@@ -178,8 +178,12 @@ restore, including sources, subscriptions and backend configuration.
 
 Verify the new business ingress URL, caller credentials, Telegram Bot/chat access,
 backend delivery URL, dedicated health URL and backend authentication before moving
-traffic. `runtime_loaded` reports Bot loader results; routes are resolved from the
-committed database, without separate route registrations. It is not proof that a
+traffic. `runtime_loaded` reports Bot loading and required Gateway worker lifecycle states;
+routes are resolved from the committed database, without separate route registrations.
+`runtime_failed_refs` identifies Bots; `runtime_failed_components` identifies
+`gateway_outbound` or `gateway_inbound`. Missing or stopped workers make the script
+exit nonzero even though configuration is committed. Configure/start the Gateway
+through process startup, then retry; restore never creates extra worker tasks. It is not proof that a
 backend is healthy. An `it_manage` target retains its adapter selection but requires
 the new instance's adapter environment. Restore does not deploy external backends,
 configure adapter processes/Jenkins credentials, or change DNS or Keep. Coordinate
@@ -188,3 +192,133 @@ the old/new consumer cutover separately to avoid competing Telegram pollers.
 `tests/e2e_config_business_routes_test.go` runs the real transfer script and verifies
 both directions against fake Telegram and backend HTTP endpoints, shared source
 subscriptions, permission refusal, disabled configuration and atomic rollback.
+
+## Cross-server migration procedure
+
+Use the same Botmux release (including this backup format) on both servers. On the
+new server, deploy with a new persistent SQLite volume and its own encryption key,
+plus Redis 6.2+ with AOF persistence for Gateway traffic. The repository's
+`docker-compose.yml` provisions these volumes and Redis; select the intended image
+release before starting it. Leave `TELEGRAM_BOT_TOKEN` unset, omit `-token` and
+`-token-file`, and leave demo mode off so startup does not populate the target.
+For a binary deployment, an equivalent command is:
+
+```sh
+./botmux -addr 127.0.0.1:8080 -db /var/lib/botmux/botdata.db \
+  -redis-addr 127.0.0.1:6379
+# With Redis authentication, also use -redis-password-file /run/secrets/redis_password.
+```
+
+Keep management access private while initializing the target. Log in using the
+initial administrator account, complete the mandatory password change, and create
+an administrator API key. Use the new instance's own key for restore. Neither
+administrator authentication nor the instance encryption key is transferred in the
+configuration file. Preserve the new SQLite volume and its generated key across
+restarts. Verify the deployment's writable data directory and queue connectivity
+before scheduling a cutover. Embedded adapters need their own deployment settings.
+
+1. **Save a version.** In a private, access-controlled Git checkout, run the export
+   command below. The backup includes recoverable plaintext secrets and workload
+   verifiers; give its entire Git history the same access restrictions as secrets.
+   Upstream's original workload Bearer credentials remain in its secret store.
+   Freeze configuration edits for the final cutover export if all of a multi-step
+   page change must be included. Concurrent export represents one committed SQLite
+   state; it cannot combine several separate page requests into a transaction.
+
+   ```bash
+   umask 077
+   read -rs -p 'Old instance admin API key: ' BOTMUX_ADMIN_KEY; echo
+   export BOTMUX_ADMIN_KEY
+   python3 scripts/config-backup.py export --url https://old-botmux.example \
+     --file settings/botmux.json
+   # Run these only after export succeeds. These commands are manual.
+   git add -- settings/botmux.json
+   git commit -m 'Save Botmux configuration before migration'
+   git log --oneline -- settings/botmux.json
+   ```
+
+2. **Select the file.** To restore the latest saved file, use
+   `settings/botmux.json`. To select an earlier version without changing it:
+
+   ```bash
+   umask 077
+   revision=PUT_COMMIT_SHA_HERE
+   git show "${revision}:settings/botmux.json" > settings/selected-botmux.json
+   # Continue only if git show succeeded; inspect history in a private terminal.
+   ```
+
+3. **Quiesce the old paths.** Before restore starts Bots, stop the old instance's
+   polling and webhook processing for the same Bot tokens, its Gateway workers,
+   legacy `/tgapi/` senders and other Bot senders. Pause upstream producers and
+   record how pending work will be handled. Do not rely only on a DNS change:
+   existing connections and queued work can still send. Keep the old configuration
+   and data available for the agreed rollback procedure, with consumers stopped.
+
+4. **Restore and retry.** Set the new administrator credential, then restore the
+   selected file into the empty target. The first command and all retries use the
+   exact same file:
+
+   ```bash
+   read -rs -p 'New instance admin API key: ' BOTMUX_ADMIN_KEY; echo
+   export BOTMUX_ADMIN_KEY
+   python3 scripts/config-backup.py restore --url https://new-botmux.example \
+     --file settings/selected-botmux.json
+   # After a lost response or correcting runtime startup, repeat verbatim:
+   python3 scripts/config-backup.py restore --url https://new-botmux.example \
+     --file settings/selected-botmux.json
+   ```
+
+   A dropped connection leaves commit status unknown to the client. Retry after
+   reconnecting or restarting the target; do not delete its database. A successful
+   retry prints the same snapshot digest and `replayed: True`. A storage or
+   validation failure commits no configuration or receipt; after correcting the
+   failure the next restore prints `replayed: False`. HTTP 409 means the actual
+   target configuration differs, including page edits made after restore. Inspect
+   that difference; an old receipt does not authorize replacement. A populated
+   different instance is always rejected—there is no merge or overwrite mode.
+
+5. **Check application and behavior.** Match all seven counts in export and restore
+   summaries: Bots, destinations, conditional routes, business routes, sources,
+   services and subscriptions. `Configuration committed` confirms atomic durable
+   storage; `runtime loaded: True` confirms the needed local workers are running.
+   A nonzero script exit with `runtime loaded: False` still means the configuration
+   is committed. Correct the identified Bot or Gateway startup problem and retry.
+   Runtime status does not certify Redis durability, Telegram access or backend
+   health; use the Gateway operations view and Bot health to check those separately.
+   Before making configuration changes, re-export the target and compare bytes:
+
+   ```sh
+   python3 scripts/config-backup.py export --url https://new-botmux.example \
+     --file settings/target-check.json
+   cmp settings/selected-botmux.json settings/target-check.json
+   ```
+
+   In an approved test chat, submit one matching conditional-forwarding update and
+   confirm the target Bot/chat (and a nonmatching update does not forward). Publish
+   one **new** service notification with the original producer credential and
+   confirm each active subscription receives it once. Send one **new** business
+   route request and verify its destination and action permissions; for inbound
+   routes, send a Telegram update and verify the intended backend receives it with
+   the configured authentication. Confirm disabled rules remain disabled. Restore
+   itself sends no synthetic acceptance messages and does not replay old history.
+
+6. **Switch external entry points.** Update producer business/service URLs, backend
+   `/tgapi/` base URLs and authentication, reverse-proxy/DNS routing, Telegram
+   webhook URL and secret where webhook mode is used, and inbound backend/health
+   URLs if their locations changed. Set the new deployment's webhook startup
+   settings explicitly; polling Bots may remove existing webhooks during loading.
+   If a page edit changes restored backend configuration, further retries of the
+   original file correctly return 409. Export and save the new configuration as a
+   new version. Resume upstream traffic only after checking these paths and keeping
+   the old consumers stopped.
+
+This moves configuration, not old messages, reply mappings, business idempotency
+records, notification history, Redis streams or in-flight delivery attempts. A
+producer replay after migration can be accepted as new work even with a previously
+used idempotency key. Draining, dropping or reconciling pending traffic is an
+explicit operational decision outside restore. A rollback must also quiesce the
+new instance before re-enabling old consumers; this procedure does not perform
+production cutover tasks automatically.
+
+For reproducible acceptance coverage and actual local results, see
+[recovery validation](configuration-backup-validation.md).

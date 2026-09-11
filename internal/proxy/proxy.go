@@ -214,6 +214,19 @@ type proxyRunner struct {
 	botID  int64
 }
 
+// InboundGatewayRunning reports the installed worker's lifecycle state without
+// probing external services or starting another consumer.
+func (pm *Manager) InboundGatewayRunning() bool {
+	pm.mu.Lock()
+	inbound, ok := pm.inbound.(gateway.WorkerProbe)
+	pm.mu.Unlock()
+	if !ok {
+		return false
+	}
+	running, _ := inbound.WorkerHealth()
+	return running
+}
+
 func NewManager(s *store.Store, tgAPIBaseURL string) *Manager {
 	return &Manager{
 		store:             s,

@@ -1,6 +1,6 @@
 # DNS migration execution report (#16)
 
-Status: **production path switched; #16 remains incomplete pending a genuine DNS fault/recovery cycle**.
+Status: **accepted by the user on 2026-09-11; production path switched and real Telegram subscription delivery verified**.
 
 Cutover: 2026-09-11 **01:40:23 UTC**. Gateway and Keep are healthy; the old
 Router is stopped. Ingress and the original scheduled DNS producer are resumed.
@@ -187,5 +187,26 @@ Do not reset the incident, fabricate recovery, replay historical Workflows acros
 idempotency domains, or describe controlled test events as a genuine DNS cycle.
 On actual business-state transitions, record each Keep event/execution, Gateway
 receipt/Delivery, final Telegram message and unchanged legacy-route counts.
-Keep #16 open until that evidence is complete. Production cutover and successful
+At the time of the original migration check, the recommendation was to keep #16 open until that evidence was complete. The user subsequently accepted the delivered scope and explicitly requested closure, as recorded below. Production cutover and successful
 controlled Telegram tests alone do not satisfy this final acceptance criterion.
+
+
+## User acceptance and closure (2026-09-11)
+
+The user confirmed acceptance after editing subscriptions in the deployed UI and
+requesting another test alert. Notification
+`c202336c-8ae1-4b5b-a103-ee9534da1558`, using the existing
+`v2:incident:domains:dns` fingerprint, reached both currently subscribed chats
+successfully, each in one attempt, at approximately 03:03 UTC. This test was
+submitted directly to the Gateway service-notification API and was explicitly
+labelled as simulated; it did not establish a naturally occurring DNS
+fault/recovery cycle through Keep. Earlier Keep-path acceptance is documented above.
+
+The user explicitly authorized merging the implementation and closing #16.
+The outstanding natural DNS cycle is therefore recorded as an accepted limitation,
+not as a completed test. The separate inconsistency between native Bot management
+and Gateway Bot Accounts is deferred to a new task.
+
+The chat picker implementation deployed from `e38933a` passed the complete
+`ee/telegram_gateway/test.sh` suite and both subscription browser suites. The
+public page was also checked to show both known chats for the selected Bot.

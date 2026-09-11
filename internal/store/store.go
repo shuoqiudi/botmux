@@ -465,7 +465,10 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	return s.migrateBotAccounts()
+	if err := s.migrateBotAccounts(); err != nil {
+		return err
+	}
+	return s.migrateConfigurationBackup()
 }
 
 // Bot config methods

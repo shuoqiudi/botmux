@@ -377,7 +377,7 @@ func (pm *Manager) ProcessUpdate(botID int64, rawUpdate map[string]any) bool {
 	// Proxy: forward to backend (skip if long poll enabled — backend pulls via queue)
 	ackOffset := true
 	if b.ProxyEnabled && b.BackendURL != "" && !b.LongPollEnabled {
-		log.Printf("[proxy] forward: botID=%d %s → %s", botID, updateSummary, b.BackendURL)
+		log.Printf("[proxy] forward: botID=%d %s", botID, updateSummary)
 		if err := pm.forwardUpdate(context.Background(), b, rawUpdate); err != nil {
 			pm.store.UpdateBotStatus(botID, fmt.Sprintf("forward error: %v", err), "")
 			log.Printf("[proxy] forward: botID=%d FAILED: %v", botID, err)
@@ -422,8 +422,8 @@ func (pm *Manager) Start() {
 	}
 	log.Printf("[proxy] Start: loaded %d bot configs", len(bots))
 	for _, b := range bots {
-		log.Printf("[proxy] Start: bot id=%d name=%q source=%s manage=%v proxy=%v backend=%q",
-			b.ID, b.Name, b.Source, b.ManageEnabled, b.ProxyEnabled, b.BackendURL)
+		log.Printf("[proxy] Start: bot id=%d manage=%v proxy=%v",
+			b.ID, b.ManageEnabled, b.ProxyEnabled)
 
 		pm.mu.Lock()
 		isWebhook := pm.webhookBots[b.ID]
@@ -448,7 +448,7 @@ func (pm *Manager) Start() {
 					log.Printf("[proxy] Start: creating managed Bot instance for bot id=%d", b.ID)
 					managedBot, err := bot.NewBot(b.Token, pm.store, b.ID, pm.tgAPIBaseURL)
 					if err != nil {
-						log.Printf("[proxy] Start: failed to create Bot instance for bot id=%d: %v", b.ID, err)
+						log.Printf("[proxy] Start: failed to create Bot instance for bot id=%d", b.ID)
 					} else {
 						pm.RegisterManagedBot(b.ID, managedBot)
 					}
@@ -537,8 +537,8 @@ func (pm *Manager) RestartBot(botID int64) error {
 		return err
 	}
 
-	log.Printf("[proxy] RestartBot: botID=%d source=%s manage=%v proxy=%v backend=%q disabled=%v",
-		botID, b.Source, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, b.Disabled)
+	log.Printf("[proxy] RestartBot: botID=%d manage=%v proxy=%v disabled=%v",
+		botID, b.ManageEnabled, b.ProxyEnabled, b.Disabled)
 
 	pm.StopBot(botID)
 
@@ -568,7 +568,8 @@ func (pm *Manager) RestartBot(botID int64) error {
 			log.Printf("[proxy] RestartBot: creating managed Bot instance for botID=%d", botID)
 			managedBot, err := bot.NewBot(b.Token, pm.store, botID, pm.tgAPIBaseURL)
 			if err != nil {
-				log.Printf("[proxy] RestartBot: failed to create bot instance for botID=%d: %v", botID, err)
+				// Transport errors can contain the Telegram token in a request URL.
+				log.Printf("[proxy] RestartBot: failed to create bot instance for botID=%d", botID)
 				return fmt.Errorf("failed to create bot instance: %w", err)
 			}
 			pm.RegisterManagedBot(botID, managedBot)
@@ -588,7 +589,7 @@ func (pm *Manager) RestartBot(botID int64) error {
 	if active {
 		// Delete webhook before polling (unless bot has webhook mode set by main.go)
 		if err := pm.DeleteWebhook(b.Token); err != nil {
-			log.Printf("[proxy] RestartBot: failed to delete webhook for botID=%d: %v", botID, err)
+			log.Printf("[proxy] RestartBot: failed to delete webhook for botID=%d", botID)
 		}
 		pm.startBot(botID)
 	} else {
@@ -653,8 +654,8 @@ func (pm *Manager) pollLoop(ctx context.Context, runner *proxyRunner) {
 
 		pollCount++
 		if pollCount <= 3 || pollCount%10 == 0 {
-			log.Printf("[proxy] pollLoop: botID=%d poll #%d (offset=%d, timeout=%ds, proxy=%v, manage=%v, backend=%q)",
-				botID, pollCount, b.Offset, timeout, b.ProxyEnabled, b.ManageEnabled, b.BackendURL)
+			log.Printf("[proxy] pollLoop: botID=%d poll #%d (offset=%d, timeout=%ds, proxy=%v, manage=%v)",
+				botID, pollCount, b.Offset, timeout, b.ProxyEnabled, b.ManageEnabled)
 		}
 
 		updates, err := pm.getUpdates(ctx, b.Token, b.Offset, timeout)
@@ -662,9 +663,14 @@ func (pm *Manager) pollLoop(ctx context.Context, runner *proxyRunner) {
 			if ctx.Err() != nil {
 				return
 			}
-			pm.store.UpdateBotStatus(botID, fmt.Sprintf("getUpdates error: %v", err), "")
-
+			// Upstream bodies and transport errors can echo credentials. Persist
+			// only a local summary, also used by ordinary Bot lists and logs.
+			message := "Telegram polling failed"
 			var apiErr *telegramAPIError
+			if errors.As(err, &apiErr) {
+				message = fmt.Sprintf("Telegram polling failed (HTTP %d)", apiErr.Code)
+			}
+			pm.store.UpdateBotStatus(botID, message, "")
 			if errors.As(err, &apiErr) && apiErr.Code == http.StatusConflict {
 				log.Printf("[proxy] pollLoop: botID=%d polling ownership conflict; stopping local poller", botID)
 				return
@@ -690,7 +696,7 @@ func (pm *Manager) pollLoop(ctx context.Context, runner *proxyRunner) {
 				continue
 			}
 
-			log.Printf("[proxy] pollLoop: botID=%d getUpdates ERROR: %v", botID, err)
+			log.Printf("[proxy] pollLoop: botID=%d %s", botID, message)
 			select {
 			case <-ctx.Done():
 				return
@@ -711,7 +717,7 @@ func (pm *Manager) pollLoop(ctx context.Context, runner *proxyRunner) {
 			lastHealthCheck = time.Now()
 			status, err := pm.CheckAndStoreHealth(botID)
 			if err != nil {
-				log.Printf("[proxy] pollLoop: botID=%d health check FAILED: %s — %v", botID, status, err)
+				log.Printf("[proxy] pollLoop: botID=%d health check FAILED: %s", botID, status)
 			} else {
 				log.Printf("[proxy] pollLoop: botID=%d health check OK: %s", botID, status)
 			}
@@ -1175,7 +1181,7 @@ func (pm *Manager) forwardUpdate(ctx context.Context, b *models.BotConfig, updat
 
 	req, err := http.NewRequestWithContext(ctx, "POST", b.BackendURL, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid backend request URL")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if b.SecretToken != "" {
@@ -1340,7 +1346,7 @@ func (pm *Manager) CheckAndStoreHealth(botID int64) (string, error) {
 	status, checkErr := pm.CheckBackendHealth(b.BackendURL, b.SecretToken)
 	now := time.Now().Format(time.RFC3339)
 	if checkErr != nil {
-		pm.store.UpdateBackendHealth(botID, status+": "+checkErr.Error(), now)
+		pm.store.UpdateBackendHealth(botID, status, now)
 		return status, checkErr
 	}
 	pm.store.UpdateBackendHealth(botID, status, now)

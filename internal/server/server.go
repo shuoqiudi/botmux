@@ -351,6 +351,8 @@ func (s *Server) BuildMux() *http.ServeMux {
 
 	// Bot management — auth required
 	mux.HandleFunc("/api/bots", s.authMiddleware(s.handleBotList))
+	mux.HandleFunc("/api/config/export", s.adminOnly(s.handleConfigExport))
+	mux.HandleFunc("/api/config/restore", s.adminOnly(s.handleConfigRestore))
 	mux.HandleFunc("/api/bots/add", s.adminOnly(s.handleBotAdd))
 	mux.HandleFunc("/api/bots/update", s.adminOnly(s.handleBotUpdate))
 	mux.HandleFunc("/api/bots/delete", s.adminOnly(s.handleBotDelete))

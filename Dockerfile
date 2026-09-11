@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 
 FROM builder AS smoke-tests
 # Recovery acceptance owns disposable Redis processes with separate AOF files.
-RUN apk add --no-cache redis
+RUN apk add --no-cache redis python3
 
 FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d AS runtime
 

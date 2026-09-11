@@ -819,4 +819,6 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
 ### Service notifications
 
+Existing DNS subscriptions can be pre-registered without sending a notification using the [atomic import and migration procedure](docs/gateway/dns-subscription-migration.md). See the [live migration status](docs/gateway/dns-subscription-migration-validation.md) before operating the cutover.
+
 Workloads publish one notification by fingerprint to multiple Bot/chat subscriptions. Each accepted notification keeps a complete durable recipient snapshot and independent Delivery records. Administrators can see the delivered/total count and each historical Bot/chat target, then replay or discard one failed target without resending successful targets. Cancellation and target changes apply to new notifications. Bot rate limits survive restarts and apply across logical accounts for the same Telegram Bot; other Bots continue independently. See the [service notification API and UI guide (中文)](docs/gateway/service-notifications.md) for setup, token rotation, delivery states, and recovery.

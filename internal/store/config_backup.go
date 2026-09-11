@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Store) migrateConfigurationBackup() error {
-	for _, table := range []string{"bots", "gateway_telegram_destinations"} {
+	for _, table := range []string{"bots", "gateway_telegram_destinations", "routes"} {
 		if err := addColumnIfMissing(s.db, table, "config_ref", "TEXT NOT NULL DEFAULT ''"); err != nil {
 			return err
 		}
@@ -20,7 +20,7 @@ func (s *Store) migrateConfigurationBackup() error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"bots", "gateway_telegram_destinations"} {
+	for _, table := range []string{"bots", "gateway_telegram_destinations", "routes"} {
 		// Existing and future objects receive a persisted random identity. Export is
 		// read-only; credential rotation and activity never change this identity.
 		_, err = tx.Exec(`UPDATE ` + table + ` SET config_ref=lower(hex(randomblob(16))) WHERE config_ref='';
@@ -53,7 +53,7 @@ func (s *Store) ExportConfiguration() (configbackup.Snapshot, error) {
 }
 
 func unsupportedConfigurationTx(tx *sql.Tx) error {
-	for _, table := range []string{"routes", "gateway_notification_services", "gateway_service_subscriptions", "gateway_business_routes", "gateway_workloads", "gateway_workload_credentials", "gateway_route_permissions"} {
+	for _, table := range []string{"gateway_notification_services", "gateway_service_subscriptions", "gateway_business_routes", "gateway_workloads", "gateway_workload_credentials", "gateway_route_permissions"} {
 		var nonempty bool
 		query := `SELECT EXISTS(SELECT 1 FROM ` + table + `)`
 		if table == "gateway_workloads" {
@@ -122,6 +122,27 @@ func (s *Store) exportConfigurationTx(tx *sql.Tx) (configbackup.Snapshot, error)
 	if err != nil {
 		return result, err
 	}
+	rows, err = tx.Query(`SELECT r.config_ref,COALESCE(s.config_ref,''),COALESCE(t.config_ref,''),r.source_chat_id,r.target_chat_id,r.condition_type,r.condition_value,r.action,r.description,r.enabled
+ FROM routes r LEFT JOIN bots s ON s.id=r.source_bot_id LEFT JOIN bots t ON t.id=r.target_bot_id ORDER BY r.id`)
+	if err != nil {
+		return result, err
+	}
+	for rows.Next() {
+		var r configbackup.ConditionalRoute
+		var sourceChat, targetChat int64
+		if err := rows.Scan(&r.Ref, &r.SourceBotRef, &r.TargetBotRef, &sourceChat, &targetChat, &r.ConditionType, &r.ConditionValue, &r.Action, &r.Description, &r.Enabled); err != nil {
+			rows.Close()
+			return result, err
+		}
+		r.SourceChatID = strconv.FormatInt(sourceChat, 10)
+		r.TargetChatID = strconv.FormatInt(targetChat, 10)
+		result.ConditionalRoutes = append(result.ConditionalRoutes, r)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return result, err
+	}
 	return result, result.Validate()
 }
 
@@ -166,7 +187,7 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 	}
 	current, err := s.exportConfigurationTx(tx)
 	if err != nil {
-		if errors.Is(err, configbackup.ErrUnsupported) {
+		if errors.Is(err, configbackup.ErrUnsupported) || errors.Is(err, configbackup.ErrInvalid) {
 			return receipt, configbackup.ErrConflict
 		}
 		return receipt, err
@@ -184,6 +205,7 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 		receipt.Digest = digest
 		receipt.Bots = bots
 		receipt.Destinations = destinations
+		receipt.ConditionalRoutes = len(snapshot.ConditionalRoutes)
 		receipt.ConfigurationCommitted = true
 		receipt.Replayed = true
 		return receipt, tx.Commit()
@@ -195,7 +217,7 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM gateway_bot_accounts`).Scan(&accountCount); err != nil {
 		return receipt, err
 	}
-	if len(current.Bots)+len(current.Destinations)+accountCount > 0 {
+	if len(current.Bots)+len(current.Destinations)+len(current.ConditionalRoutes)+accountCount > 0 {
 		return receipt, configbackup.ErrConflict
 	}
 	botIDs := map[string]int64{}
@@ -235,6 +257,14 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 			return receipt, err
 		}
 	}
+	// Inserting in snapshot order recreates the existing ORDER BY id execution
+	// order, independently of source database IDs and stable configuration refs.
+	for _, r := range snapshot.ConditionalRoutes {
+		if _, err = tx.Exec(`INSERT INTO routes(config_ref,source_bot_id,target_bot_id,source_chat_id,target_chat_id,condition_type,condition_value,action,description,enabled,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			r.Ref, botIDs[r.SourceBotRef], botIDs[r.TargetBotRef], r.SourceChatID, r.TargetChatID, r.ConditionType, r.ConditionValue, r.Action, r.Description, r.Enabled, nowRFC3339()); err != nil {
+			return receipt, err
+		}
+	}
 	if _, err = tx.Exec(`INSERT INTO configuration_restores(digest,bots,destinations) VALUES(?,?,?)`, digest, len(snapshot.Bots), len(snapshot.Destinations)); err != nil {
 		return receipt, err
 	}
@@ -244,6 +274,7 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 	receipt.Digest = digest
 	receipt.Bots = len(snapshot.Bots)
 	receipt.Destinations = len(snapshot.Destinations)
+	receipt.ConditionalRoutes = len(snapshot.ConditionalRoutes)
 	receipt.ConfigurationCommitted = true
 	return receipt, nil
 }

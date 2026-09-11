@@ -1,8 +1,8 @@
-# Bot and chat-target configuration backups
+# Bot, chat-target and conditional-routing configuration backups
 
-Issue #22 supports all configured Bots and explicit Telegram destinations. Conditional
-forwarding rules, notification services/subscriptions and workload/business-route
-configuration are reserved for the following tickets: export and restore reject
+Issues #22–#23 support all configured Bots, explicit Telegram destinations and
+conditional forwarding rules. Notification services/subscriptions and
+workload/business-route configuration remain reserved: export and restore reject
 nonempty collections in those categories. Messages, discovered chats, counters,
 timestamps and platform login accounts are not backed up. Independent LLM routing,
 bridges and platform settings are outside this format.
@@ -44,7 +44,7 @@ storage failures return 503.
 `GET /api/config/export` returns readable deterministic JSON with `schema_version: 1`.
 `POST /api/config/restore` validates the entire document and commits configuration and
 a SHA-256 receipt together. All fields are required, including explicit booleans and
-empty arrays; unknown fields and versions fail. Bot and destination `ref` values are
+empty arrays; unknown fields and versions fail. Bot, destination and conditional-rule `ref` values are
 persistent opaque configuration identities, unrelated to credentials or database IDs.
 Telegram chat IDs are decimal strings, preserving signed 64-bit precision.
 
@@ -65,3 +65,44 @@ migration, strict validation and authorization, rollback at receipt persistence,
 lost-response and restart retries, runtime failures and safe diagnostics. Run it with
 `go test ./tests -run '^TestE2E_Config' -count=1`; Python 3 must be on PATH. The Docker
 `smoke-tests` stage includes Python for this suite.
+
+## Conditional forwarding example
+
+The same export/restore commands include every rule, including disabled rules and
+identical duplicates. A rule in `conditional_routes` looks like this (Bot refs must
+match entries in the snapshot's `bots` array):
+
+```json
+{
+  "ref": "a0fe814a15e84c149445c715644ac151",
+  "source_bot_ref": "source_bot_ref_from_bots",
+  "target_bot_ref": "target_bot_ref_from_bots",
+  "source_chat_id": "0",
+  "target_chat_id": "-1001234567890",
+  "condition_type": "text",
+  "condition_value": "urgent|error",
+  "action": "forward",
+  "description": "Send matching alerts to operations",
+  "enabled": true
+}
+```
+
+Array order is execution order; changing it changes the configuration digest.
+Ordinary page edits preserve each rule's `ref`. Source chat `"0"` matches any chat;
+target chat `"0"` uses the incoming chat. IDs are signed 64-bit decimal strings and
+need not appear in discovered chats or explicit destinations. Conditions support
+case-insensitive `text` regexes, `user_id` and `chat_id`. Actions preserve existing
+runtime semantics: `forward` sends text with `sendMessage`, `copy` calls
+`forwardMessage`, and `drop` stops processing subsequent rules when matched.
+An empty text condition remains a nonmatching rule, as in the existing runtime.
+Unknown actions/conditions, malformed regexes or integers, and missing Bot references
+fail the entire snapshot, including disabled rules. No partial Bot or rule restore
+is committed. A repeat restore after a target rule edit returns a conflict.
+
+Message mappings and old reply chains are excluded. Restore does not synthesize
+updates or send messages; new incoming Telegram updates execute the restored rules
+and create new reply mappings normally. Routing activity leaves the exported
+configuration unchanged. LLM routing is not included.
+
+`tests/e2e_config_routes_test.go` covers rule round trips and live fake Telegram
+requests, duplicate identity and order, strict validation and transaction rollback.

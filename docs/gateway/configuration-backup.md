@@ -1,10 +1,8 @@
 # Botmux configuration backups
 
-Issues #22–#24 support Bots, explicit Telegram destinations, conditional forwarding
-rules, notification services/subscriptions and workload sources with credential
-verifiers and service permissions. Business routes and nonempty workload route
-permissions remain unsupported: export and restore reject the entire configuration
-if either is present. Messages, discovered chats, counters,
+Issues #22–#25 support Bots, explicit Telegram destinations, conditional forwarding
+rules, notification services/subscriptions, business routes and workload sources
+with credential verifiers, service permissions and per-route action permissions. Messages, discovered chats, counters,
 timestamps and platform login accounts are not backed up. Independent LLM routing,
 bridges and platform settings are outside this format.
 
@@ -30,13 +28,13 @@ python3 scripts/config-backup.py restore --url https://new-botmux.example
 
 Use `--file /path/to/botmux.json` to choose another backup or an exported historical
 Git version. `BOTMUX_ADMIN_COOKIE` may instead contain a valid admin session cookie
-(`name=value`). The snapshot intentionally contains plaintext Bot tokens and webhook
-secrets. Terminal summaries contain counts and results only. Downloads are validated
+(`name=value`). The snapshot intentionally contains plaintext Bot tokens, webhook
+secrets and inbound backend credentials. Terminal summaries contain counts and results only. Downloads are validated
 before atomic replacement and new files have mode 0600.
 
 The target must have no business configuration; its own admin accounts and instance
 key remain in place. Restore remaps stable configuration references to local IDs and
-seals plaintext Bot/webhook secrets using the target key. Workload authentication
+seals plaintext Bot/webhook/backend secrets using the target key. Workload authentication
 verifiers are installed unchanged; they are independent of the instance key. Repeating a snapshot returns its durable
 receipt only if the current configuration still matches. A changed target returns
 HTTP 409. Invalid formats/references return 400, unsupported configuration returns
@@ -120,11 +118,13 @@ service notification; only current subscribers receive it. A different source wi
 the same fingerprint remains a separate service, even without subscriptions.
 
 Each `workloads` entry contains `ref`, `name`, `status`, `service_permissions`
-(`publish` and `query` booleans), `route_permissions` (currently an empty array), and
+(`publish` and `query` booleans), `route_permissions`, and
 `credentials`. Each credential carries `name`, `algorithm: "sha256"`, a `verifier`
-(64 lowercase hexadecimal characters), and `enabled`. Route permissions reserve
-`route_key` and `action` fields for business-route restoration; any nonempty list
-currently fails with HTTP 422 instead of dropping authorization.
+(64 lowercase hexadecimal characters), and `enabled`. Route permissions contain
+`route_key` and `action` fields. Actions are `messages.send`, `callbacks.answer` or
+`deliveries.read`; missing routes, unknown actions and duplicate grants reject the
+whole snapshot. A workload shared by routes and services remains one source with
+exactly its original permissions.
 
 Bot tokens and webhook secrets are plaintext recoverable secrets in this private
 backup. Workload credentials are different: Botmux only stores their SHA-256
@@ -155,3 +155,36 @@ The script and notification/permission integration tests in
 `tests/e2e_config_notifications_test.go` exercise original and revoked credentials,
 independent instance keys, source isolation, cancelled/disabled state, multiple
 Bot/chat recipients, rollback, strict validation and retries.
+
+## Business routes and backend connections
+
+`business_routes` preserves `route_key`, `display_name`, `bot_ref`,
+`destination_ref`, `enabled`, `status`, `inbound_target`, `inbound_enabled`,
+`outbound_enabled`, `inbound_backend_url`, `inbound_backend_health_url`,
+`inbound_backend_token` and `allowed_callers`. Route keys remain immutable business
+identities. Local route/account/destination IDs and revisions are rebuilt. Backend
+credentials are plaintext in this private snapshot and sealed with the target
+instance key in both the current route and its initial revision; never copy the
+source encryption key. Validation timestamps and health results are excluded.
+
+The original workload Bearer credential can call
+`POST /api/v1/routes/{route_key}/messages` on the new instance. Route permissions
+remain specific to each action; the descriptive `allowed_callers` list is preserved
+and does not create grants. Route-only sources are included even if they have no
+notification services. Disabled routes and directions keep their configured state.
+Active inbound routes must resolve to unique physical Telegram Bot/chat targets,
+including destination aliases. Invalid references or grants roll back the whole
+restore, including sources, subscriptions and backend configuration.
+
+Verify the new business ingress URL, caller credentials, Telegram Bot/chat access,
+backend delivery URL, dedicated health URL and backend authentication before moving
+traffic. `runtime_loaded` reports Bot loader results; routes are resolved from the
+committed database, without separate route registrations. It is not proof that a
+backend is healthy. An `it_manage` target retains its adapter selection but requires
+the new instance's adapter environment. Restore does not deploy external backends,
+configure adapter processes/Jenkins credentials, or change DNS or Keep. Coordinate
+the old/new consumer cutover separately to avoid competing Telegram pollers.
+
+`tests/e2e_config_business_routes_test.go` runs the real transfer script and verifies
+both directions against fake Telegram and backend HTTP endpoints, shared source
+subscriptions, permission refusal, disabled configuration and atomic rollback.

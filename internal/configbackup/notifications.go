@@ -50,6 +50,10 @@ type Subscription struct {
 }
 
 func (s Snapshot) validateNotifications() error {
+	routes := map[string]bool{}
+	for _, r := range s.BusinessRoutes {
+		routes[r.RouteKey] = true
+	}
 	workloads, names, hashes := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, w := range s.Workloads {
 		path := fmt.Sprintf("snapshot.workloads[%d]", i)
@@ -62,8 +66,21 @@ func (s Snapshot) validateNotifications() error {
 		if w.Status != "active" && w.Status != "disabled" {
 			return &FieldError{ErrInvalid, path + ".status", "invalid"}
 		}
-		if len(w.RoutePermissions) > 0 {
-			return &FieldError{ErrUnsupported, path + ".route_permissions", "must be empty"}
+		permissions := map[RoutePermission]bool{}
+		for j, p := range w.RoutePermissions {
+			pp := fmt.Sprintf("%s.route_permissions[%d]", path, j)
+			if !routes[p.RouteKey] {
+				return &FieldError{ErrInvalid, pp + ".route_key", "missing"}
+			}
+			switch models.GatewayAction(p.Action) {
+			case models.GatewayActionMessagesSend, models.GatewayActionCallbacksAnswer, models.GatewayActionDeliveriesRead:
+			default:
+				return &FieldError{ErrInvalid, pp + ".action", "unsupported"}
+			}
+			if permissions[p] {
+				return &FieldError{ErrInvalid, pp, "duplicate"}
+			}
+			permissions[p] = true
 		}
 		workloads[w.Ref], names[w.Name] = true, true
 		for j, c := range w.Credentials {
@@ -140,6 +157,13 @@ func (s Snapshot) canonicalNotifications() Snapshot {
 		w := &s.Workloads[i]
 		w.Credentials = append([]Credential{}, w.Credentials...)
 		w.RoutePermissions = append([]RoutePermission{}, w.RoutePermissions...)
+		sort.Slice(w.RoutePermissions, func(i, j int) bool {
+			a, b := w.RoutePermissions[i], w.RoutePermissions[j]
+			if a.RouteKey != b.RouteKey {
+				return a.RouteKey < b.RouteKey
+			}
+			return a.Action < b.Action
+		})
 		sort.Slice(w.Credentials, func(i, j int) bool { return w.Credentials[i].Verifier < w.Credentials[j].Verifier })
 	}
 	s.NotificationServices = append([]NotificationService{}, s.NotificationServices...)

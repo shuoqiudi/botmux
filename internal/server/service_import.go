@@ -31,13 +31,13 @@ func (s *Server) handleServiceImport(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, 400, "invalid_request")
 		return
 	}
-	if !validServiceLabel(input.MigrationID, 128) || len(input.Services) == 0 || len(input.Services) > 100 {
+	if !models.ValidServiceLabel(input.MigrationID, 128) || len(input.Services) == 0 || len(input.Services) > 100 {
 		writeServiceError(w, 400, "invalid_manifest")
 		return
 	}
 	seen := map[int64]map[string]bool{}
 	for _, entry := range input.Services {
-		if entry.WorkloadID <= 0 || !validServiceLabel(entry.Fingerprint, 512) || !validServiceLabel(entry.DisplayName, 256) || len(entry.Destinations) == 0 || len(entry.Destinations) > 100 {
+		if entry.WorkloadID <= 0 || !models.ValidServiceLabel(entry.Fingerprint, 512) || !models.ValidServiceLabel(entry.DisplayName, 256) || len(entry.Destinations) == 0 || len(entry.Destinations) > 100 {
 			writeServiceError(w, 400, "invalid_manifest")
 			return
 		}

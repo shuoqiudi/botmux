@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"strconv"
 
 	"github.com/skrashevich/botmux/internal/configbackup"
@@ -52,24 +51,8 @@ func (s *Store) ExportConfiguration() (configbackup.Snapshot, error) {
 	return snapshot, tx.Commit()
 }
 
-func unsupportedConfigurationTx(tx *sql.Tx) error {
-	for _, table := range []string{"gateway_business_routes", "gateway_route_permissions"} {
-		var nonempty bool
-		query := `SELECT EXISTS(SELECT 1 FROM ` + table + `)`
-		if err := tx.QueryRow(query).Scan(&nonempty); err != nil {
-			return err
-		}
-		if nonempty {
-			return fmt.Errorf("%w: %s is not empty", configbackup.ErrUnsupported, table)
-		}
-	}
-	return nil
-}
 func (s *Store) exportConfigurationTx(tx *sql.Tx) (configbackup.Snapshot, error) {
 	result := configbackup.Empty()
-	if err := unsupportedConfigurationTx(tx); err != nil {
-		return result, err
-	}
 	rows, err := tx.Query(`SELECT config_ref,name,token_ciphertext,bot_username,description,manage_enabled,proxy_enabled,long_poll_enabled,disabled,backend_url,secret_token_ciphertext,polling_timeout,source FROM bots ORDER BY config_ref`)
 	if err != nil {
 		return result, err
@@ -142,13 +125,16 @@ func (s *Store) exportConfigurationTx(tx *sql.Tx) (configbackup.Snapshot, error)
 	if err := exportNotificationsTx(tx, &result); err != nil {
 		return result, err
 	}
+	if err := s.exportBusinessRoutesTx(tx, &result); err != nil {
+		return result, err
+	}
 	return result, result.Validate()
 }
 
 // RestoreConfiguration prepares and validates the whole snapshot before entering
 // a single configuration/receipt transaction. Runtime loading belongs to Server.
 func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configbackup.Receipt, error) {
-	receipt := configbackup.Receipt{Workloads: len(snapshot.Workloads), NotificationServices: len(snapshot.NotificationServices), Subscriptions: len(snapshot.Subscriptions), RuntimeFailedRefs: []string{}, ExternalHealth: "not_verified"}
+	receipt := configbackup.Receipt{BusinessRoutes: len(snapshot.BusinessRoutes), Workloads: len(snapshot.Workloads), NotificationServices: len(snapshot.NotificationServices), Subscriptions: len(snapshot.Subscriptions), RuntimeFailedRefs: []string{}, ExternalHealth: "not_verified"}
 	if err := snapshot.Validate(); err != nil {
 		return receipt, err
 	}
@@ -216,7 +202,7 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM gateway_bot_accounts`).Scan(&accountCount); err != nil {
 		return receipt, err
 	}
-	if len(current.Bots)+len(current.Destinations)+len(current.ConditionalRoutes)+len(current.Workloads)+len(current.NotificationServices)+len(current.Subscriptions)+accountCount > 0 {
+	if len(current.BusinessRoutes)+len(current.Bots)+len(current.Destinations)+len(current.ConditionalRoutes)+len(current.Workloads)+len(current.NotificationServices)+len(current.Subscriptions)+accountCount > 0 {
 		return receipt, configbackup.ErrConflict
 	}
 	botIDs := map[string]int64{}
@@ -265,6 +251,9 @@ func (s *Store) RestoreConfiguration(snapshot configbackup.Snapshot) (configback
 		}
 	}
 	if err = restoreNotificationsTx(tx, snapshot); err != nil {
+		return receipt, err
+	}
+	if err = s.restoreBusinessRoutesTx(tx, snapshot); err != nil {
 		return receipt, err
 	}
 	if _, err = tx.Exec(`INSERT INTO configuration_restores(digest,bots,destinations) VALUES(?,?,?)`, digest, len(snapshot.Bots), len(snapshot.Destinations)); err != nil {

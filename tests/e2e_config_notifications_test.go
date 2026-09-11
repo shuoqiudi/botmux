@@ -302,7 +302,7 @@ func TestE2E_ConfigNotificationValidationAndRollback(t *testing.T) {
 		{"invalid status", func(s *configbackup.Snapshot) { s.Workloads[0].Status = "enabled" }, 400},
 		{"route permission", func(s *configbackup.Snapshot) {
 			s.Workloads[0].RoutePermissions = []configbackup.RoutePermission{{RouteKey: "alerts", Action: "messages.send"}}
-		}, 422},
+		}, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var snapshot configbackup.Snapshot
@@ -366,7 +366,7 @@ func assertEmptyNotificationConfig(t *testing.T, h *e2eHarness) {
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Bots)+len(snapshot.Workloads)+len(snapshot.NotificationServices)+len(snapshot.Subscriptions)+len(snapshot.Destinations) != 0 {
+	if len(snapshot.BusinessRoutes)+len(snapshot.Bots)+len(snapshot.Workloads)+len(snapshot.NotificationServices)+len(snapshot.Subscriptions)+len(snapshot.Destinations) != 0 {
 		t.Fatal("failed restore left partial configuration")
 	}
 }

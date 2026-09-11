@@ -142,8 +142,8 @@ func TestE2E_ConfigValidationAndAuthorization(t *testing.T) {
 	_ = json.Unmarshal(raw, &snapshot)
 	snapshot["business_routes"] = []any{map[string]any{"route_key": "future"}}
 	status, _ = serviceCall(t, target, "POST", "/api/config/restore", "", "", snapshot, true)
-	if status != 422 {
-		t.Fatalf("unsupported rules: %d", status)
+	if status != 400 {
+		t.Fatalf("incomplete business route: %d", status)
 	}
 	for _, path := range []string{"/api/config/export", "/api/config/restore"} {
 		status, _ = serviceCall(t, target, "POST", path, "synthetic-workload", "", snapshot, false)

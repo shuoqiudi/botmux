@@ -40,7 +40,7 @@ type Snapshot struct {
 	ConditionalRoutes    []ConditionalRoute    `json:"conditional_routes"`
 	NotificationServices []NotificationService `json:"notification_services"`
 	Subscriptions        []Subscription        `json:"subscriptions"`
-	BusinessRoutes       []json.RawMessage     `json:"business_routes"`
+	BusinessRoutes       []BusinessRoute       `json:"business_routes"`
 	Workloads            []Workload            `json:"workloads"`
 }
 type Bot struct {
@@ -81,6 +81,7 @@ type ConditionalRoute struct {
 	Enabled        bool   `json:"enabled"`
 }
 type Receipt struct {
+	BusinessRoutes         int      `json:"business_routes"`
 	Workloads              int      `json:"workloads"`
 	NotificationServices   int      `json:"notification_services"`
 	Subscriptions          int      `json:"subscriptions"`
@@ -96,7 +97,7 @@ type Receipt struct {
 }
 
 func Empty() Snapshot {
-	return Snapshot{1, []Bot{}, []Destination{}, []ConditionalRoute{}, []NotificationService{}, []Subscription{}, []json.RawMessage{}, []Workload{}}
+	return Snapshot{1, []Bot{}, []Destination{}, []ConditionalRoute{}, []NotificationService{}, []Subscription{}, []BusinessRoute{}, []Workload{}}
 }
 
 // Decode rejects unknown, missing, null and duplicate fields, including nested
@@ -195,9 +196,6 @@ func (s Snapshot) Validate() error {
 	if s.SchemaVersion != 1 {
 		return &FieldError{ErrInvalid, "snapshot.schema_version", "must be 1"}
 	}
-	if len(s.BusinessRoutes) > 0 {
-		return ErrUnsupported
-	}
 	refs := map[string]bool{}
 	tokens := map[string]bool{}
 	for i, b := range s.Bots {
@@ -269,10 +267,14 @@ func (s Snapshot) Validate() error {
 			return fieldError("action", "unsupported")
 		}
 	}
+	if err := s.validateBusinessRoutes(); err != nil {
+		return err
+	}
 	return s.validateNotifications()
 }
 func (s Snapshot) Canonical() ([]byte, string, error) {
 	s = s.canonicalNotifications()
+	s = s.canonicalBusinessRoutes()
 	// Route order is semantic: never sort by random configuration identity.
 	s.ConditionalRoutes = append([]ConditionalRoute{}, s.ConditionalRoutes...)
 	s.Bots = append([]Bot{}, s.Bots...)

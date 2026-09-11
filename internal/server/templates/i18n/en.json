@@ -438,7 +438,7 @@
   "service_token": "Bot token (leave blank to keep)",
   "service_new_bot": "New Bot account",
   "service_new_destination": "New chat target",
-  "service_configure_targets": "Configure or validate Bot accounts and chat targets",
+  "service_configure_targets": "Advanced: Bot credentials and manual chat settings",
   "service_validate_save": "Validate and save",
   "service_subscription_help": "Changes affect new notifications. Accepted deliveries keep their original Bot and Chat.",
   "service_subscription_saved": "Subscription added.",
@@ -455,5 +455,14 @@
   "service_status_reconciling": "Send outcome uncertain",
   "service_status_dead-lettered": "Failed — dead-letter queue",
   "service_status_replay_pending": "Replay pending",
-  "service_status_discarded": "Discarded"
+  "service_status_discarded": "Discarded",
+  "service_chat": "Chat",
+  "service_refresh_chats": "Refresh chats",
+  "service_choose_chat": "Choose a chat",
+  "service_already_subscribed": "Already subscribed",
+  "service_chat_unavailable": "Unavailable — validate in advanced settings",
+  "service_chats_loading": "Loading chats…",
+  "service_chat_choices_help": "Choose a chat this Bot has seen. Access is checked when you subscribe.",
+  "service_no_chats": "No chats available yet. Let the Bot receive a message in the chat, or add a Chat ID in advanced settings.",
+  "service_chats_failed": "Known chats could not be loaded. Click Refresh chats to retry; registered targets remain available."
 }

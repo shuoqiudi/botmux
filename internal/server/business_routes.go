@@ -209,16 +209,13 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			username = identity.Username
-			for _, destination := range mustGatewayDestinations(s.store.GetTelegramDestinations()) {
-				if destination.BotAccountID == id {
-					if _, err := s.validateTelegramChat(input.Token, destination.ChatID); err != nil {
-						_ = s.store.RecordGatewayAudit(0, existing.Revision, gatewayAdminActor(r), "bot_token.validate", map[string]any{"bot_account_id": id, "success": false})
-						writeBusinessError(w, 422, "telegram_validation_failed", err)
-						return
-					}
-				}
+			if err := s.validateBotDestinations(existing.NativeBotID, input.Token); err != nil {
+				_ = s.store.RecordGatewayAudit(0, existing.Revision, gatewayAdminActor(r), "bot_token.validate", map[string]any{"bot_account_id": id, "success": false})
+				writeBusinessError(w, 422, "telegram_validation_failed", err)
+				return
 			}
 		}
+
 		if input.ExpectedRevision <= 0 {
 			writeBusinessError(w, 400, "expected_revision_required", store.ErrExpectedRevisionRequired)
 			return
@@ -228,6 +225,10 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 			expected = existing.Revision
 		}
 		if err := s.store.RotateBotAccount(id, expected, input.Name, username, input.Token, gatewayAdminActor(r)); err != nil {
+			if errors.Is(err, store.ErrBotIdentityConflict) {
+				writeBusinessError(w, 409, "bot_identity_conflict", err)
+				return
+			}
 			if errors.Is(err, store.ErrDuplicateSubscription) {
 				writeBusinessError(w, 409, "duplicate_subscription", err)
 				return
@@ -246,6 +247,9 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 			}
 			s.proxy.StopBot(nativeID)
 			s.proxy.UnregisterManagedBot(nativeID)
+			s.mu.Lock()
+			delete(s.bots, nativeID)
+			s.mu.Unlock()
 			if err := s.proxy.RestartBot(nativeID); err == nil {
 				if b := s.proxy.GetManagedBot(nativeID); b != nil {
 					s.RegisterBot(nativeID, b)
@@ -736,4 +740,32 @@ func (s *Server) handleBusinessRouteTest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	writeJSON(w, map[string]any{"status": "sent", "route_key": route.RouteKey, "message_id": sent.MessageID})
+}
+
+// Both editing surfaces validate all destinations, including legacy aliases.
+func (s *Server) validateBotDestinations(botID int64, token string) error {
+	accounts, err := s.store.GetBotAccounts()
+	if err != nil {
+		return err
+	}
+	ids := map[int64]bool{}
+	for _, a := range accounts {
+		if a.NativeBotID == botID {
+			ids[a.ID] = true
+		}
+	}
+	destinations, err := s.store.GetTelegramDestinations()
+	if err != nil {
+		return err
+	}
+	checked := map[int64]bool{}
+	for _, d := range destinations {
+		if ids[d.BotAccountID] && !checked[d.ChatID] {
+			if _, err := s.validateTelegramChat(token, d.ChatID); err != nil {
+				return err
+			}
+			checked[d.ChatID] = true
+		}
+	}
+	return nil
 }

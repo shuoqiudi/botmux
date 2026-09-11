@@ -22,7 +22,7 @@ func (s *Store) GetGatewayRouteMetrics(ctx context.Context, routeKey string, now
 	var validatedAt, destinationStatus, destinationValidated string
 	result := &models.GatewayRouteMetrics{RouteKey: routeKey}
 	err := s.db.QueryRowContext(ctx, `SELECT r.id,r.revision,(a.token_ciphertext<>''),r.last_validated_at,
-		d.status,d.validated_at,COALESCE((SELECT b.id FROM bots b WHERE b.token_fingerprint=a.token_fingerprint LIMIT 1),0)
+		d.status,d.validated_at,COALESCE(a.native_bot_id,0)
 		FROM gateway_business_routes r
 		JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
 		JOIN gateway_telegram_destinations d ON d.id=r.destination_id

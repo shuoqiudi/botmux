@@ -3,6 +3,7 @@ package models
 // BotAccount is the stable Telegram identity used by Business Routes. Token is
 // deliberately write-only at JSON boundaries.
 type BotAccount struct {
+	NativeBotID     int64  `json:"native_bot_id"`
 	ID              int64  `json:"id"`
 	Name            string `json:"name"`
 	Username        string `json:"username"`

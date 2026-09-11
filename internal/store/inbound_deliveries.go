@@ -87,7 +87,7 @@ const inboundRouteSelect = `
 	FROM gateway_business_routes r
 	JOIN gateway_bot_accounts a ON a.id=r.bot_account_id
 	JOIN gateway_telegram_destinations d ON d.id=r.destination_id
-	JOIN bots b ON b.id=? AND b.token_fingerprint=a.token_fingerprint
+	JOIN bots b ON b.id=? AND b.id=a.native_bot_id
 	WHERE d.bot_account_id=a.id AND d.chat_id=?
 	ORDER BY (r.enabled=1 AND r.inbound_enabled=1 AND r.status='active') DESC,r.id
 	LIMIT 1`

@@ -182,7 +182,7 @@ func TestE2E_GatewayManagement(t *testing.T) {
 	}
 
 	// The legacy bot list is also redacted after write.
-	legacyBotID, err := h.store.AddBotConfig(models.BotConfig{Name: "legacy", Token: token, SecretToken: "backend-secret"})
+	legacyBotID, err := h.store.AddBotConfig(models.BotConfig{Name: "legacy", Token: "900003:synthetic-legacy", SecretToken: "backend-secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

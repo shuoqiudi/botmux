@@ -173,66 +173,39 @@ func (s *Store) RotateBotAccount(id, expected int64, name, username, token, acto
 		return err
 	}
 	defer tx.Rollback()
-	var current int64
-	var oldFingerprint string
-	if err := tx.QueryRow(`SELECT revision,token_fingerprint FROM gateway_bot_accounts WHERE id=?`, id).Scan(&current, &oldFingerprint); err != nil {
+	var current, botID int64
+	if err := tx.QueryRow(`SELECT revision,native_bot_id FROM gateway_bot_accounts WHERE id=?`, id).Scan(&current, &botID); err != nil {
 		return err
 	}
 	if current != expected {
 		return ErrRevisionConflict
 	}
 	if token == "" {
-		_, err = tx.Exec(`UPDATE gateway_bot_accounts SET name=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, name, nowRFC3339(), id, current)
+		_, err = tx.Exec(`UPDATE bots SET name=? WHERE id=?`, name, botID)
 	} else {
-		_, err = tx.Exec(`UPDATE gateway_bot_accounts SET name=?,username=?,token='',token_ciphertext=?,token_fingerprint=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, name, username, sealed, s.secretFingerprint(token), nowRFC3339(), id, current)
-		if err == nil {
-			_, err = tx.Exec(`UPDATE bots SET token='',token_ciphertext=?,token_fingerprint=?,bot_username=? WHERE token_fingerprint=?`, sealed, s.secretFingerprint(token), username, oldFingerprint)
+		var conflict bool
+		if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM bots WHERE id<>? AND token_fingerprint=? AND token_ciphertext<>'')`, botID, s.secretFingerprint(token)).Scan(&conflict); err != nil {
+			return err
 		}
+		if conflict {
+			return ErrBotIdentityConflict
+		}
+		_, err = tx.Exec(`UPDATE bots SET name=?,bot_username=?,token='',token_ciphertext=?,token_fingerprint=? WHERE id=?`, name, username, sealed, s.secretFingerprint(token), botID)
 	}
 	if err != nil {
 		return err
 	}
-	if err := s.validateServiceRecipients(tx); err != nil {
+	if err = s.syncBotAccountsTx(tx, botID, actorID, true); err != nil {
 		return err
 	}
-	if err := appendGatewayAudit(tx, 0, current+1, "admin", actorID, "bot_token.rotate", map[string]any{"bot_account_id": id, "token_changed": token != ""}); err != nil {
+	if err = appendGatewayAudit(tx, 0, current+1, "admin", actorID, "bot_token.rotate", map[string]any{"bot_account_id": id, "token_changed": token != ""}); err != nil {
 		return err
-	}
-	rows, err := tx.Query(`SELECT id,revision FROM gateway_business_routes WHERE bot_account_id=?`, id)
-	if err != nil {
-		return err
-	}
-	type affected struct{ id, revision int64 }
-	var routes []affected
-	for rows.Next() {
-		var a affected
-		if err := rows.Scan(&a.id, &a.revision); err != nil {
-			rows.Close()
-			return err
-		}
-		routes = append(routes, a)
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	for _, route := range routes {
-		next := route.revision + 1
-		if _, err := tx.Exec(`UPDATE gateway_business_routes SET revision=?,updated_at=? WHERE id=? AND revision=?`, next, nowRFC3339(), route.id, route.revision); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`INSERT INTO gateway_route_revisions(route_id,revision,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,inbound_backend_token,inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,validated_at,created_at)
-			SELECT id,?,display_name,bot_account_id,destination_id,inbound_enabled,inbound_target,inbound_backend_url,'',inbound_backend_token_ciphertext,outbound_enabled,allowed_callers,enabled,status,last_validated_at,? FROM gateway_business_routes WHERE id=?`, next, nowRFC3339(), route.id); err != nil {
-			return err
-		}
-		if err := appendGatewayAudit(tx, route.id, next, "admin", actorID, "bot_token.rotate", map[string]any{"token_changed": token != "", "bot_account_revision": current + 1}); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }
 
 func (s *Store) NativeBotIDsForGatewayAccount(id int64) ([]int64, error) {
-	rows, err := s.db.Query(`SELECT b.id FROM bots b JOIN gateway_bot_accounts a ON a.token_fingerprint=b.token_fingerprint WHERE a.id=?`, id)
+	rows, err := s.db.Query(`SELECT b.id FROM bots b JOIN gateway_bot_accounts a ON a.native_bot_id=b.id WHERE a.id=?`, id)
 	if err != nil {
 		return nil, err
 	}

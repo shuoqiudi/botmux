@@ -113,37 +113,46 @@ func (s *Store) migrateBusinessRoutes() error {
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
 func (s *Store) AddBotAccount(a models.BotAccount) (int64, error) {
-	now := nowRFC3339()
 	sealed, err := s.sealSecret(a.Token)
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO gateway_bot_accounts(name,username,token,token_ciphertext,token_fingerprint,revision,created_at,updated_at) VALUES(?,?, '',?,?,1,?,?)`,
-		a.Name, a.Username, sealed, s.secretFingerprint(a.Token), now, now)
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	defer tx.Rollback()
+	botID, err := ensureNativeBotTx(tx, a.Name, a.Username, sealed, s.secretFingerprint(a.Token))
+	if err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`INSERT INTO gateway_bot_accounts(name,username,token,token_ciphertext,token_fingerprint,native_bot_id,revision,created_at,updated_at)
+ SELECT name,bot_username,'',token_ciphertext,token_fingerprint,id,1,?,? FROM bots WHERE id=?`, nowRFC3339(), nowRFC3339(), botID)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }
 
 func (s *Store) UpdateBotAccount(a models.BotAccount) error {
-	if a.Token == "" {
-		_, err := s.db.Exec(`UPDATE gateway_bot_accounts SET name=?, username=?, updated_at=? WHERE id=?`, a.Name, a.Username, nowRFC3339(), a.ID)
-		return err
-	}
-	sealed, err := s.sealSecret(a.Token)
+	existing, err := s.GetBotAccount(a.ID)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE gateway_bot_accounts SET name=?,username=?,token='',token_ciphertext=?,token_fingerprint=?,revision=revision+1,updated_at=? WHERE id=?`, a.Name, a.Username, sealed, s.secretFingerprint(a.Token), nowRFC3339(), a.ID)
-	return err
+	return s.RotateBotAccount(a.ID, existing.Revision, a.Name, a.Username, a.Token, "")
 }
 
 func (s *Store) GetBotAccount(id int64) (*models.BotAccount, error) {
 	var a models.BotAccount
 	var ciphertext string
-	err := s.db.QueryRow(`SELECT id,name,username,token_ciphertext,revision,created_at,updated_at FROM gateway_bot_accounts WHERE id=?`, id).
-		Scan(&a.ID, &a.Name, &a.Username, &ciphertext, &a.Revision, &a.CreatedAt, &a.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id,native_bot_id,name,username,token_ciphertext,revision,created_at,updated_at FROM gateway_bot_accounts WHERE id=?`, id).
+		Scan(&a.ID, &a.NativeBotID, &a.Name, &a.Username, &ciphertext, &a.Revision, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +166,7 @@ func (s *Store) GetBotAccount(id int64) (*models.BotAccount, error) {
 }
 
 func (s *Store) GetBotAccounts() ([]models.BotAccount, error) {
-	rows, err := s.db.Query(`SELECT id,name,username,token_ciphertext,revision,created_at,updated_at FROM gateway_bot_accounts ORDER BY name,id`)
+	rows, err := s.db.Query(`SELECT id,native_bot_id,name,username,token_ciphertext,revision,created_at,updated_at FROM gateway_bot_accounts ORDER BY name,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +175,7 @@ func (s *Store) GetBotAccounts() ([]models.BotAccount, error) {
 	for rows.Next() {
 		var a models.BotAccount
 		var ciphertext string
-		if err := rows.Scan(&a.ID, &a.Name, &a.Username, &ciphertext, &a.Revision, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.NativeBotID, &a.Name, &a.Username, &ciphertext, &a.Revision, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
 		a.Token, err = s.openSecret(ciphertext)
@@ -405,7 +414,7 @@ func (s *Store) CreateBusinessRouteSetup(a models.BotAccount, d models.TelegramD
 	if err != nil {
 		return nil, 0, err
 	}
-	accountRes, err := tx.Exec(`INSERT INTO gateway_bot_accounts(name,username,token,token_ciphertext,token_fingerprint,revision,created_at,updated_at) VALUES(?,?, '',?,?,1,?,?)`, a.Name, a.Username, sealedToken, s.secretFingerprint(a.Token), now, now)
+	accountRes, err := tx.Exec(`INSERT INTO gateway_bot_accounts(name,username,token,token_ciphertext,token_fingerprint,native_bot_id,revision,created_at,updated_at) SELECT name,bot_username,'',token_ciphertext,token_fingerprint,id,1,?,? FROM bots WHERE id=?`, now, now, nativeBotID)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -19,7 +19,7 @@ type Store struct {
 	subsMu    sync.RWMutex
 	subs      map[chan models.Message]struct{}
 	// gatewayMu keeps the small SQLite/Redis acceptance window deterministic.
-	// Native BotMux data paths remain independent.
+	// Bot identity mutations share the lock with Gateway configuration changes.
 	gatewayMu sync.Mutex
 }
 
@@ -44,6 +44,7 @@ func NewStoreWithSecretKey(path string, key []byte) (*Store, error) {
 
 	s := &Store{db: db, secretKey: append([]byte(nil), key...), subs: make(map[chan models.Message]struct{})}
 	if err := s.migrate(); err != nil {
+		db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -464,28 +465,33 @@ func (s *Store) migrate() error {
 		return err
 	}
 
-	return nil
+	return s.migrateBotAccounts()
 }
 
 // Bot config methods
 
 func (s *Store) RegisterCLIBot(token, username string) (int64, error) {
-	var id int64
-	err := s.db.QueryRow(`SELECT id FROM bots WHERE token_fingerprint=?`, s.secretFingerprint(token)).Scan(&id)
-	if err == nil {
-		s.db.Exec(`UPDATE bots SET bot_username=?, manage_enabled=1 WHERE id=?`, username, id)
-		return id, nil
+	_, lookupErr := s.GetBotConfigByToken(token)
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+		return 0, lookupErr
 	}
-	sealed, err := s.sealSecret(token)
+	id, err := s.AddBotConfig(models.BotConfig{Token: token, Name: username, BotUsername: username, ManageEnabled: true, PollingTimeout: 30})
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO bots (name,token,token_ciphertext,token_fingerprint,bot_username,manage_enabled,source) VALUES (?, '',?,?,?,1,'cli')`,
-		username, sealed, s.secretFingerprint(token), username)
+	b, err := s.GetBotConfig(id)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	b.BotUsername = username
+	b.ManageEnabled = true
+	if err = s.UpdateBotConfig(*b); err != nil {
+		return 0, err
+	}
+	if errors.Is(lookupErr, sql.ErrNoRows) {
+		_, err = s.db.Exec(`UPDATE bots SET source='cli' WHERE id=? AND source='web'`, id)
+	}
+	return id, err
 }
 
 func (s *Store) MigrateLegacyChats(botID int64) {
@@ -501,14 +507,36 @@ func (s *Store) AddBotConfig(b models.BotConfig) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var existingID int64
+	err = tx.QueryRow(`SELECT id FROM bots WHERE token_fingerprint=? AND token_ciphertext<>'' ORDER BY id LIMIT 1`, s.secretFingerprint(b.Token)).Scan(&existingID)
+	if err == nil {
+		return existingID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	res, err := tx.Exec(`
 		INSERT INTO bots (name,token,token_ciphertext,token_fingerprint,bot_username,manage_enabled,proxy_enabled,backend_url,secret_token,secret_token_ciphertext,polling_timeout,long_poll_enabled,source)
 		VALUES (?, '',?,?, ?,?,?,?, '',?,?,?, 'web')
 	`, b.Name, sealedToken, s.secretFingerprint(b.Token), b.BotUsername, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, sealedBackend, b.PollingTimeout, b.LongPollEnabled)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err = ensureGatewayAccountTx(tx, id); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }
 
 func (s *Store) UpdateBotConfig(b models.BotConfig) error {
@@ -520,16 +548,59 @@ func (s *Store) UpdateBotConfig(b models.BotConfig) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var conflict bool
+	if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM bots WHERE id<>? AND token_fingerprint=? AND token_ciphertext<>'')`, b.ID, s.secretFingerprint(b.Token)).Scan(&conflict); err != nil {
+		return err
+	}
+	if conflict {
+		return ErrBotIdentityConflict
+	}
+	_, err = tx.Exec(`
 		UPDATE bots SET name=?,token='',token_ciphertext=?,token_fingerprint=?,bot_username=?,manage_enabled=?,proxy_enabled=?,backend_url=?,secret_token='',secret_token_ciphertext=?,polling_timeout=?,long_poll_enabled=?
 		WHERE id=?
 	`, b.Name, sealedToken, s.secretFingerprint(b.Token), b.BotUsername, b.ManageEnabled, b.ProxyEnabled, b.BackendURL, sealedBackend, b.PollingTimeout, b.LongPollEnabled, b.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	if err = s.syncBotAccountsTx(tx, b.ID, "", false); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteBotConfig(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM bots WHERE id=?`, id)
-	return err
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var used bool
+	err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM gateway_telegram_destinations WHERE bot_account_id IN (SELECT id FROM gateway_bot_accounts WHERE native_bot_id=?))
+ OR EXISTS(SELECT 1 FROM gateway_business_routes WHERE bot_account_id IN (SELECT id FROM gateway_bot_accounts WHERE native_bot_id=?))
+	 OR EXISTS(SELECT 1 FROM gateway_service_recipients WHERE bot_account_id IN (SELECT id FROM gateway_bot_accounts WHERE native_bot_id=?))
+	 OR EXISTS(SELECT 1 FROM gateway_route_revisions WHERE bot_account_id IN (SELECT id FROM gateway_bot_accounts WHERE native_bot_id=?))`, id, id, id, id).Scan(&used)
+	if err != nil {
+		return err
+	}
+	if used {
+		return ErrBotInUse
+	}
+	if _, err = tx.Exec(`DELETE FROM gateway_bot_accounts WHERE native_bot_id=?`, id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM bots WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetBotConfigs() ([]models.BotConfig, error) {

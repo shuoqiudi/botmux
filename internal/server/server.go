@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -610,6 +611,15 @@ func (s *Server) handleBotAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	req.BotUsername = username
 
+	// Re-registering a known identity must not reset its modes or webhook.
+	if existing, err := s.store.GetBotConfigByToken(req.Token); err == nil {
+		writeJSON(w, map[string]any{"status": "ok", "id": existing.ID})
+		return
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, err)
+		return
+	}
+
 	// Delete webhook before starting polling
 	if req.ManageEnabled || req.ProxyEnabled {
 		if err := s.proxy.DeleteWebhook(req.Token); err != nil {
@@ -624,6 +634,13 @@ func (s *Server) handleBotAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reused identities retain their existing operating modes.
+	stored, err := s.store.GetBotConfig(id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	req = *stored
 	// Create managed Bot instance if needed
 	if req.ManageEnabled {
 		managedBot, err := bot.NewBot(req.Token, s.store, id, s.TgAPIBaseURL)
@@ -693,9 +710,26 @@ func (s *Server) handleBotUpdate(w http.ResponseWriter, r *http.Request) {
 		req.BotUsername = username
 	}
 
+	if req.Token != existing.Token {
+		if err := s.validateBotDestinations(req.ID, req.Token); err != nil {
+			writeBusinessError(w, 422, "telegram_validation_failed", err)
+			return
+		}
+	}
 	if err := s.store.UpdateBotConfig(req); err != nil {
+		if errors.Is(err, store.ErrBotIdentityConflict) || errors.Is(err, store.ErrDuplicateSubscription) {
+			writeBusinessError(w, 409, "bot_identity_conflict", err)
+			return
+		}
 		writeError(w, err)
 		return
+	}
+	if req.Token != existing.Token {
+		s.proxy.StopBot(req.ID)
+		s.proxy.UnregisterManagedBot(req.ID)
+		s.mu.Lock()
+		delete(s.bots, req.ID)
+		s.mu.Unlock()
 	}
 
 	// Restart via proxy manager (works for all bots)
@@ -721,12 +755,19 @@ func (s *Server) handleBotDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 
-	s.proxy.StopBot(id)
-	s.proxy.UnregisterManagedBot(id)
 	if err := s.store.DeleteBotConfig(id); err != nil {
+		if errors.Is(err, store.ErrBotInUse) {
+			writeBusinessError(w, 409, "bot_in_use", err)
+			return
+		}
 		writeError(w, err)
 		return
 	}
+	s.proxy.StopBot(id)
+	s.proxy.UnregisterManagedBot(id)
+	s.mu.Lock()
+	delete(s.bots, id)
+	s.mu.Unlock()
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 

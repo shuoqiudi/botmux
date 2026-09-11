@@ -3958,7 +3958,14 @@ function showBotModal(bot = null) {
   document.getElementById('botModal').style.display = 'flex';
 }
 
-function closeBotModal() { document.getElementById('botModal').style.display = 'none'; }
+function closeBotModal() {
+  document.getElementById('botModal').style.display = 'none';
+  if (serviceBotEditorService !== null) {
+    const id = serviceBotEditorService; serviceBotEditorService = null;
+    document.getElementById('notificationServicesModal').style.display = 'flex';
+    loadNotificationService(id);
+  }
+}
 
 function toggleProxyFields() {
   const proxy = document.getElementById('botFormProxy').checked;
@@ -3972,7 +3979,7 @@ function toggleProxyFields() {
   else if (proxy) hint.textContent = t(longPoll ? 'bot_mode_hint_proxy_longpoll' : 'bot_mode_hint_proxy');
   else if (longPoll) hint.textContent = t('bot_mode_hint_longpoll');
   else hint.textContent = t('bot_mode_hint_none');
-  hint.style.color = (!manage && !proxy && !longPoll) ? 'var(--magenta)' : 'var(--text3)';
+  hint.style.color = 'var(--text3)';
 }
 
 async function validateBotToken() {
@@ -4004,7 +4011,6 @@ async function saveBot() {
     polling_timeout: parseInt(document.getElementById('botFormTimeout').value) || 30,
   };
   if (!data.name || (!editID && !data.token)) { toast(t('name_token_required'), 'error'); return; }
-  if (!data.manage_enabled && !data.proxy_enabled) { toast(t('bot_mode_hint_none'), 'error'); return; }
   if (data.proxy_enabled && !data.backend_url) { toast(t('backend_url_required'), 'error'); return; }
   try {
     let savedBotId;
@@ -4543,8 +4549,30 @@ async function loadNotificationService(id, before = '') {
 function serviceStatus(status) {
   return t('service_status_' + status);
 }
-function serviceAccountOptions(withNew = false) {
-  return (withNew ? `<option value="">${t('service_new_bot')}</option>` : '') + serviceAccounts.map(a => `<option value="${a.id}">${esc(a.name)} (@${esc(a.username)})</option>`).join('');
+let serviceBotEditorService = null;
+function uniqueServiceAccounts() {
+  return serviceAccounts.filter((a,i,items) => items.findIndex(b => b.native_bot_id === a.native_bot_id) === i);
+}
+function sameServiceBot(left, right) {
+  if (left === right) return true;
+  const a = serviceAccounts.find(a => a.id === left), b = serviceAccounts.find(a => a.id === right);
+  return !!a && !!b && a.native_bot_id === b.native_bot_id;
+}
+function serviceAccountOptions() {
+  return uniqueServiceAccounts().map(a => `<option value="${a.id}">${esc(a.name)} (@${esc(a.username)})</option>`).join('');
+}
+async function editServiceBot(create = false) {
+  if (!isAdmin()) return;
+  try {
+    await loadBots();
+    const account = serviceAccounts.find(a => a.id === Number(document.getElementById('serviceSubscriptionBot').value));
+    const bot = create ? null : allBots.find(b => b.id === account?.native_bot_id);
+    if (!create && !bot) return;
+    serviceBotEditorService = notificationServiceDetail.service.id;
+    document.getElementById('notificationServicesModal').style.display = 'none';
+    showBotModal(bot);
+    if (create) { document.getElementById('botFormManage').checked = false; toggleProxyFields(); }
+  } catch(e) { toast(e.message, 'error'); }
 }
 function renderServiceSubscriptionForms() {
   return `<h4>${t('service_add_subscription')}</h4>
@@ -4556,13 +4584,9 @@ function renderServiceSubscriptionForms() {
     </form>
     <p id="serviceChatChoicesStatus" role="status" aria-live="polite"></p>
     <p>${t('service_subscription_help')}</p>
+    <button class="btn btn-sm" type="button" id="serviceEditBot" onclick="editServiceBot()">${t('edit_bot')}</button>
+    <button class="btn btn-sm" type="button" id="serviceAddBot" onclick="editServiceBot(true)">${t('add_bot')}</button>
     <details id="serviceTargetConfig"><summary>${t('service_configure_targets')}</summary>
-      <form class="modal-field" id="serviceAccountForm" onsubmit="event.preventDefault();saveServiceAccount()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0">
-        <label>${t('service_bot')}<select class="route-modal-select" id="serviceAccountEdit" onchange="editServiceAccount()">${serviceAccountOptions(true)}</select></label>
-        <label>${t('service_name')}<input type="text" id="serviceAccountName" required maxlength="256"></label>
-        <label>${t('service_token')}<input id="serviceAccountToken" type="password" autocomplete="new-password" required></label>
-        <button class="btn btn-sm" type="submit">${t('service_validate_save')}</button>
-      </form>
       <form class="modal-field" id="serviceTargetForm" onsubmit="event.preventDefault();saveServiceTarget()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0">
         <label>${t('service_destination')}<select class="route-modal-select" id="serviceDestinationEdit" onchange="editServiceTarget()"><option value="">${t('service_new_destination')}</option>${serviceDestinations.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></label>
         <label>${t('service_bot')}<select class="route-modal-select" id="serviceTargetBot" required>${serviceAccountOptions()}</select></label>
@@ -4576,6 +4600,8 @@ function renderNotificationServiceDetail() {
   const el = document.getElementById('notificationServiceDetail');
   if (!notificationServiceDetail || !canViewNotificationServices()) { el.innerHTML = ''; return; }
   const {service,subscriptions,notifications,next_before} = notificationServiceDetail;
+  const selectedBot = el.dataset.service === String(service.id) ? document.getElementById('serviceSubscriptionBot')?.value : '';
+  el.dataset.service = String(service.id);
   el.innerHTML = `<h3>${esc(service.display_name)}</h3>
     <button class="btn btn-sm" id="serviceDetailRefresh" onclick="loadNotificationService(${service.id})">${t('refresh')}</button>
     <h4>${t('notification_subscriptions')}: ${service.subscription_count}</h4>` + subscriptions.map(p=>`<div class="route-item" style="padding:8px;margin:8px 0"><div class="route-body">${esc(p.bot_name)} → ${esc(p.destination_name)} (${esc(p.chat_title)})</div>
@@ -4589,7 +4615,11 @@ function renderNotificationServiceDetail() {
         ${d.status==='dead-lettered'?`<button class="btn btn-sm" onclick="serviceDeliveryAction('${esc(d.delivery_id)}','replay')">${t('gateway_replay')}</button><button class="btn btn-sm" onclick="serviceDeliveryAction('${esc(d.delivery_id)}','discard')">${t('gateway_discard')}</button>`:''}</div>`).join('')}
       ${isAdmin() && n.text !== undefined?`<pre style="white-space:pre-wrap;font-family:inherit">${esc(n.text)}</pre>`:''}</div>`).join('') +
     (next_before?`<button class="btn btn-sm" onclick="loadNotificationService(${service.id},'${esc(next_before)}')">${t('notification_more')}</button>`:'');
-  if (isAdmin()) updateServiceDestinationOptions();
+  if (isAdmin()) {
+    const select = document.getElementById('serviceSubscriptionBot');
+    if (Array.from(select.options).some(o => o.value === selectedBot)) select.value = selectedBot;
+    updateServiceDestinationOptions();
+  }
 }
 function updateServiceSubscriptionButton() {
   const form = document.getElementById('serviceSubscriptionForm');
@@ -4611,7 +4641,7 @@ async function updateServiceDestinationOptions() {
     if (!current()) return;
     const selected = select.value || previous;
     const choices = new Map();
-    for (const d of serviceDestinations.filter(d => d.bot_account_id === bot)) {
+    for (const d of serviceDestinations.filter(d => sameServiceBot(d.bot_account_id, bot))) {
       choices.set(d.chat_id, {chat_id:d.chat_id, title:d.chat_title || d.name, value:String(d.id), destination_id:d.id, active:d.status === 'active'});
     }
     for (const chat of chats) {
@@ -4623,7 +4653,7 @@ async function updateServiceDestinationOptions() {
     const subscribed = new Set(notificationServiceDetail.subscriptions.map(p => p.destination_id));
     select.replaceChildren(new Option(t('service_choose_chat'), ''));
     for (const c of choices.values()) {
-      const already = subscribed.has(c.destination_id);
+      const already = subscribed.has(c.destination_id) || serviceDestinations.some(d => sameServiceBot(d.bot_account_id,bot) && d.chat_id === c.chat_id && subscribed.has(d.id));
       const suffix = already ? t('service_already_subscribed') : !c.active ? t('service_chat_unavailable') : '';
       const option = new Option(`${c.title} · ${c.chat_id}${suffix ? ' — ' + suffix : ''}`, c.value);
       option.dataset.chatId = String(c.chat_id);
@@ -4675,7 +4705,7 @@ async function saveServiceSubscription() {
     if (value.startsWith('chat:')) {
       // Read again before creating: a prior response may have been lost, or
       // another administrator may have registered this chat in the meantime.
-      const find = items => items.find(d => d.bot_account_id === bot && d.chat_id === chat);
+      const find = items => items.find(d => sameServiceBot(d.bot_account_id, bot) && d.chat_id === chat);
       let destination = find(await api('/api/gateway/v1/destinations'));
       if (!destination) {
         try {
@@ -4720,35 +4750,18 @@ async function cancelServiceSubscription(subscription) {
     await refreshServiceConfiguration(id,t('service_subscription_cancelled'));
   } catch(e){toast(e.message,'error');}
 }
-function editServiceAccount() {
-  const a=serviceAccounts.find(a=>a.id===Number(document.getElementById('serviceAccountEdit').value));
-  document.getElementById('serviceAccountName').value=a?a.name:'';
-  document.getElementById('serviceAccountToken').value='';
-  document.getElementById('serviceAccountToken').required=!a;
-}
 function editServiceTarget() {
   const d=serviceDestinations.find(d=>d.id===Number(document.getElementById('serviceDestinationEdit').value));
   document.getElementById('serviceTargetName').value=d?d.name:'';
   document.getElementById('serviceTargetChat').value=d?d.chat_id:'';
-  if(d)document.getElementById('serviceTargetBot').value=String(d.bot_account_id);
-}
-async function saveServiceAccount() {
-  if(!isAdmin())return;
-  const id=notificationServiceDetail.service.id;
-  const a=serviceAccounts.find(a=>a.id===Number(document.getElementById('serviceAccountEdit').value));
-  const input={name:document.getElementById('serviceAccountName').value.trim(),token:document.getElementById('serviceAccountToken').value};
-  if(a)input.expected_revision=a.revision;
-  try {
-    await api('/api/gateway/v1/bot-accounts'+(a?'/'+a.id:''),{method:a?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});
-    await refreshServiceConfiguration(id,t('service_target_saved'));
-  } catch(e){toast(e.message,'error');}
+  if(d)document.getElementById('serviceTargetBot').value=String(uniqueServiceAccounts().find(a=>sameServiceBot(a.id,d.bot_account_id))?.id || '');
 }
 async function saveServiceTarget() {
   if(!isAdmin())return;
   const id=notificationServiceDetail.service.id;
   const d=serviceDestinations.find(d=>d.id===Number(document.getElementById('serviceDestinationEdit').value));
   const input={name:document.getElementById('serviceTargetName').value.trim(),bot_account_id:Number(document.getElementById('serviceTargetBot').value),chat_id:Number(document.getElementById('serviceTargetChat').value)};
-  if(d)input.expected_revision=d.revision;
+  if(d) { input.expected_revision=d.revision; if(sameServiceBot(d.bot_account_id,input.bot_account_id))input.bot_account_id=d.bot_account_id; }
   try {
     await api('/api/gateway/v1/destinations'+(d?'/'+d.id:''),{method:d?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)});
     await refreshServiceConfiguration(id,t('service_target_saved'));
@@ -4897,6 +4910,7 @@ async function createBusinessRouteSetup() {
     document.getElementById('businessBotToken').value = '';
     result.textContent = t('business_route_created'); result.style.color = 'var(--green)';
     closeBusinessRouteSetup();
+    await loadBots();
     await loadBusinessRoutes();
   } catch(e) {
     document.getElementById('businessBotToken').value = '';
@@ -4954,6 +4968,7 @@ async function editBusinessRoute(key) {
       outbound_enabled:asEnabled(outboundValue), allowed_callers:route.allowed_callers, enabled:asEnabled(enabledValue), expected_revision:latestRoute.revision
     })});
     toast(t('business_route_updated'));
+    await loadBots();
     await loadBusinessRoutes();
   } catch(e) { toast(e.message, 'error'); }
 }

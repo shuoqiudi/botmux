@@ -10,6 +10,17 @@ const puppeteer = require(process.env.PUPPETEER_MODULE || 'puppeteer');
   await page.goto(process.env.SUBSCRIPTION_URL,{waitUntil:'networkidle0'});
   await page.click('#notificationServicesBtn');await page.waitForSelector('#notificationServicesList button');await page.click('#notificationServicesList button');
   await page.waitForSelector('#serviceSubscriptionForm');await page.select('#serviceSubscriptionBot',process.env.SUBSCRIPTION_ACCOUNT);
+  await page.evaluate(async()=>{
+   const response=await fetch('/api/gateway/v1/bot-accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'Historical alias',token:'940001:subscription-secret'})});
+   if(response.status!==201)throw Error('Alias registration failed');
+   await loadNotificationService(notificationServiceDetail.service.id);
+  });
+  const lists=await page.evaluate(async()=>({bots:await (await fetch('/api/bots')).json(),options:Array.from(document.querySelectorAll('#serviceSubscriptionBot option')).map(o=>({text:o.textContent,bot:serviceAccounts.find(a=>a.id===Number(o.value)).native_bot_id}))}));
+  assert.equal(lists.options.length,lists.bots.length);
+  assert.deepEqual(lists.options.map(a=>a.bot).sort(),lists.bots.map(b=>b.id).sort());
+  for(const b of lists.bots)assert(lists.options.find(a=>a.bot===b.id).text.includes(b.name));
+  assert.equal(await page.$('#serviceAccountForm'),null);
+  await page.select('#serviceSubscriptionBot',process.env.SUBSCRIPTION_ACCOUNT);
   await page.waitForFunction(()=>Array.from(document.querySelectorAll('#serviceSubscriptionDestination option')).some(o=>o.textContent.includes('Discovered')),{timeout:4000});
   const before=await page.evaluate(async()=>await (await fetch('/api/gateway/v1/destinations')).json());assert.equal(before.length,1);
   const value=await page.$$eval('#serviceSubscriptionDestination option',options=>options.find(o=>o.textContent.includes('Discovered')).value);

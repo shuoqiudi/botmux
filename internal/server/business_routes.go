@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +146,10 @@ type botAccountInput struct {
 }
 
 func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/chats") {
+		s.handleBotAccountChats(w, r)
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		accounts, err := s.store.GetBotAccounts()
@@ -255,6 +260,56 @@ func (s *Server) handleBotAccounts(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// Known chats are read-only choices, not subscriptions or validated destinations.
+func (s *Server) handleBotAccountChats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id := itemID(strings.TrimSuffix(r.URL.Path, "/chats"), "")
+	if _, err := s.store.GetBotAccount(id); errors.Is(err, sql.ErrNoRows) {
+		writeBusinessError(w, 404, "not_found", errors.New("Bot account not found"))
+		return
+	} else if err != nil {
+		writeBusinessError(w, 500, "storage_error", err)
+		return
+	}
+	ids, err := s.store.NativeBotIDsForGatewayAccount(id)
+	if err != nil {
+		writeBusinessError(w, 500, "storage_error", err)
+		return
+	}
+	type chatChoice struct {
+		ID       int64  `json:"id"`
+		Title    string `json:"title"`
+		Username string `json:"username"`
+		Type     string `json:"type"`
+	}
+	choices := []chatChoice{}
+	seen := map[int64]bool{}
+	for _, botID := range ids {
+		chats, err := s.store.GetChats(botID)
+		if err != nil {
+			writeBusinessError(w, 500, "storage_error", err)
+			return
+		}
+		for _, chat := range chats {
+			if seen[chat.ID] {
+				continue
+			}
+			seen[chat.ID] = true
+			choices = append(choices, chatChoice{ID: chat.ID, Title: chat.Title, Username: chat.Username, Type: chat.Type})
+		}
+	}
+	sort.Slice(choices, func(i, j int) bool {
+		if choices[i].Title == choices[j].Title {
+			return choices[i].ID < choices[j].ID
+		}
+		return choices[i].Title < choices[j].Title
+	})
+	writeJSON(w, choices)
 }
 
 type destinationInput struct {

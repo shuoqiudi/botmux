@@ -234,6 +234,10 @@ func (s *Server) handleServiceNotifications(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleNotificationServicesAdmin(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/gateway/v1/services/import" {
+		s.handleServiceImport(w, r)
+		return
+	}
 	if strings.Contains(strings.TrimPrefix(r.URL.Path, "/api/gateway/v1/services"), "/subscriptions") {
 		s.handleServiceSubscriptions(w, r)
 		return

@@ -438,7 +438,7 @@
   "service_token": "Токен бота (пусто — сохранить)",
   "service_new_bot": "Новый аккаунт бота",
   "service_new_destination": "Новый получатель",
-  "service_configure_targets": "Настройка и проверка ботов и получателей",
+  "service_configure_targets": "Дополнительно: учётные данные ботов и ручная настройка чатов",
   "service_validate_save": "Проверить и сохранить",
   "service_subscription_help": "Изменения действуют на новые уведомления. Принятые доставки сохраняют исходного бота и чат.",
   "service_subscription_saved": "Подписка добавлена.",
@@ -455,5 +455,14 @@
   "service_status_reconciling": "Результат отправки неизвестен",
   "service_status_dead-lettered": "Ошибка — очередь недоставленных",
   "service_status_replay_pending": "Ожидает повторной постановки",
-  "service_status_discarded": "Отклонено"
+  "service_status_discarded": "Отклонено",
+  "service_chat": "Чат",
+  "service_refresh_chats": "Обновить чаты",
+  "service_choose_chat": "Выберите чат",
+  "service_already_subscribed": "Уже подписан",
+  "service_chat_unavailable": "Недоступен — проверьте в дополнительных настройках",
+  "service_chats_loading": "Загрузка чатов…",
+  "service_chat_choices_help": "Выберите известный боту чат. Доступ проверяется при подписке.",
+  "service_no_chats": "Пока нет доступных чатов. Отправьте сообщение в чат с ботом или добавьте ID чата в дополнительных настройках.",
+  "service_chats_failed": "Не удалось загрузить известные чаты. Нажмите «Обновить чаты»; зарегистрированные получатели остаются доступны."
 }

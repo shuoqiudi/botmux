@@ -16,6 +16,12 @@ func (s *Store) migrateServiceNotifications() error {
 		}
 	}
 	_, err := s.db.Exec(`
+ CREATE TABLE IF NOT EXISTS gateway_service_imports (
+ migration_id TEXT PRIMARY KEY,
+ manifest_hash TEXT NOT NULL,
+ service_ids TEXT NOT NULL,
+ created_at TEXT NOT NULL
+ );
  CREATE TABLE IF NOT EXISTS gateway_notification_services (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  workload_id INTEGER NOT NULL REFERENCES gateway_workloads(id),

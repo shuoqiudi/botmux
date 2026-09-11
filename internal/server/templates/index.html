@@ -4488,9 +4488,11 @@ let notificationServicesCache = [];
 let notificationServiceDetail = null;
 let serviceAccounts = [];
 let serviceDestinations = [];
+let serviceChatRequest = 0;
 
 function resetNotificationServices() {
   serviceAccounts = []; serviceDestinations = [];
+  serviceChatRequest++;
   notificationServicesCache = [];
   notificationServiceDetail = null;
   closeNotificationServices();
@@ -4548,9 +4550,11 @@ function renderServiceSubscriptionForms() {
   return `<h4>${t('service_add_subscription')}</h4>
     <form class="modal-field" id="serviceSubscriptionForm" onsubmit="event.preventDefault();saveServiceSubscription()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
       <label>${t('service_bot')}<select class="route-modal-select" id="serviceSubscriptionBot" required onchange="updateServiceDestinationOptions()">${serviceAccountOptions()}</select></label>
-      <label>${t('service_destination')}<select class="route-modal-select" id="serviceSubscriptionDestination" required></select></label>
-      <button class="btn btn-sm" type="submit">${t('service_add_subscription')}</button>
+      <label>${t('service_chat')}<select class="route-modal-select" id="serviceSubscriptionDestination" required onchange="updateServiceSubscriptionButton()"></select></label>
+      <button class="btn btn-sm" id="serviceSubscriptionSubmit" type="submit" disabled>${t('service_add_subscription')}</button>
+      <button class="btn btn-sm" type="button" onclick="updateServiceDestinationOptions()">${t('service_refresh_chats')}</button>
     </form>
+    <p id="serviceChatChoicesStatus" role="status" aria-live="polite"></p>
     <p>${t('service_subscription_help')}</p>
     <details id="serviceTargetConfig"><summary>${t('service_configure_targets')}</summary>
       <form class="modal-field" id="serviceAccountForm" onsubmit="event.preventDefault();saveServiceAccount()" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0">
@@ -4587,9 +4591,62 @@ function renderNotificationServiceDetail() {
     (next_before?`<button class="btn btn-sm" onclick="loadNotificationService(${service.id},'${esc(next_before)}')">${t('notification_more')}</button>`:'');
   if (isAdmin()) updateServiceDestinationOptions();
 }
-function updateServiceDestinationOptions() {
+function updateServiceSubscriptionButton() {
+  const form = document.getElementById('serviceSubscriptionForm');
+  const select = document.getElementById('serviceSubscriptionDestination');
+  const button = document.getElementById('serviceSubscriptionSubmit');
+  if (button) button.disabled = !select.value || select.selectedOptions[0]?.disabled || form.dataset.saving === 'true';
+}
+async function updateServiceDestinationOptions() {
+  const select = document.getElementById('serviceSubscriptionDestination');
+  if (!select || !isAdmin()) return;
   const bot = Number(document.getElementById('serviceSubscriptionBot').value);
-  document.getElementById('serviceSubscriptionDestination').innerHTML = serviceDestinations.filter(d=>d.bot_account_id===bot && d.status==='active').map(d=>`<option value="${d.id}">${esc(d.name)} (${esc(d.chat_title)} · ${d.chat_id})</option>`).join('');
+  const previous = select.dataset.bot === String(bot) ? select.value : '';
+  if (select.dataset.bot !== String(bot)) select.value = '';
+  select.dataset.bot = String(bot);
+  const user = currentUser;
+  const request = ++serviceChatRequest;
+  const current = () => currentUser === user && request === serviceChatRequest && document.getElementById('serviceSubscriptionDestination') === select;
+  const render = (chats) => {
+    if (!current()) return;
+    const selected = select.value || previous;
+    const choices = new Map();
+    for (const d of serviceDestinations.filter(d => d.bot_account_id === bot)) {
+      choices.set(d.chat_id, {chat_id:d.chat_id, title:d.chat_title || d.name, value:String(d.id), destination_id:d.id, active:d.status === 'active'});
+    }
+    for (const chat of chats) {
+      const title = chat.title || (chat.username ? '@' + chat.username : String(chat.id));
+      const existing = choices.get(chat.id);
+      if (existing) existing.title = title;
+      else choices.set(chat.id, {chat_id:chat.id, title, value:'chat:' + chat.id, active:true});
+    }
+    const subscribed = new Set(notificationServiceDetail.subscriptions.map(p => p.destination_id));
+    select.replaceChildren(new Option(t('service_choose_chat'), ''));
+    for (const c of choices.values()) {
+      const already = subscribed.has(c.destination_id);
+      const suffix = already ? t('service_already_subscribed') : !c.active ? t('service_chat_unavailable') : '';
+      const option = new Option(`${c.title} · ${c.chat_id}${suffix ? ' — ' + suffix : ''}`, c.value);
+      option.dataset.chatId = String(c.chat_id);
+      option.dataset.chatTitle = c.title;
+      option.disabled = already || !c.active;
+      select.appendChild(option);
+    }
+    if (Array.from(select.options).some(o => o.value === selected && !o.disabled)) select.value = selected;
+    updateServiceSubscriptionButton();
+    return choices.size;
+  };
+  render([]);
+  const status = document.getElementById('serviceChatChoicesStatus');
+  if (!bot) {status.textContent = t('service_no_chats');return;}
+  status.textContent = t('service_chats_loading');
+  try {
+    const chats = await api(`/api/gateway/v1/bot-accounts/${bot}/chats`);
+    if (!current()) return;
+    const count = render(chats);
+    status.textContent = count ? t('service_chat_choices_help') : t('service_no_chats');
+  } catch(e) {
+    if (current()) status.textContent = t('service_chats_failed');
+  }
 }
 async function refreshServiceConfiguration(id, message = '') {
   await loadNotificationService(id);
@@ -4600,14 +4657,60 @@ async function refreshServiceConfiguration(id, message = '') {
   const result=document.getElementById('serviceConfigResult');if(result)result.textContent=message;
 }
 async function saveServiceSubscription() {
-  if(!isAdmin())return;
-  const {id,revision}=notificationServiceDetail.service;
-  const destination_id=Number(document.getElementById('serviceSubscriptionDestination').value);
-  if(!destination_id)return;
+  if (!isAdmin()) return;
+  const form = document.getElementById('serviceSubscriptionForm');
+  const select = document.getElementById('serviceSubscriptionDestination');
+  if (form.dataset.saving === 'true' || !select.value || select.selectedOptions[0].disabled) return;
+  const {id,revision} = notificationServiceDetail.service;
+  const user = currentUser;
+  const bot = Number(document.getElementById('serviceSubscriptionBot').value);
+  const choice = select.selectedOptions[0];
+  const value = select.value;
+  const chat = Number(choice.dataset.chatId);
+  const name = choice.dataset.chatTitle;
+  form.dataset.saving = 'true';
+  updateServiceSubscriptionButton();
   try {
-    await api(`/api/gateway/v1/services/${id}/subscriptions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,destination_id})});
-    await refreshServiceConfiguration(id,t('service_subscription_saved'));
-  } catch(e){toast(e.message,'error');}
+    let destination_id = Number(value);
+    if (value.startsWith('chat:')) {
+      // Read again before creating: a prior response may have been lost, or
+      // another administrator may have registered this chat in the meantime.
+      const find = items => items.find(d => d.bot_account_id === bot && d.chat_id === chat);
+      let destination = find(await api('/api/gateway/v1/destinations'));
+      if (!destination) {
+        try {
+          destination = await api('/api/gateway/v1/destinations', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,bot_account_id:bot,chat_id:chat})});
+        } catch(error) {
+          destination = find(await api('/api/gateway/v1/destinations'));
+          if (!destination) throw error;
+        }
+      }
+      if (destination.status !== 'active') throw new Error(t('service_chat_unavailable'));
+      destination_id = destination.id;
+    }
+    if (currentUser !== user) return;
+    let failure;
+    try {
+      await api(`/api/gateway/v1/services/${id}/subscriptions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:revision,destination_id})});
+    } catch(error) { failure = error; }
+    if (currentUser === user && notificationServiceDetail?.service.id === id) {
+      await refreshServiceConfiguration(id, failure ? '' : t('service_subscription_saved'));
+      const botSelect = document.getElementById('serviceSubscriptionBot');
+      if (botSelect) {
+        botSelect.value = String(bot);
+        await updateServiceDestinationOptions();
+        const chatSelect = document.getElementById('serviceSubscriptionDestination');
+        const option = Array.from(chatSelect.options).find(o => Number(o.dataset.chatId) === chat);
+        if (option && !option.disabled) chatSelect.value = option.value;
+        updateServiceSubscriptionButton();
+      }
+      if (failure && !notificationServiceDetail.subscriptions.some(p => p.destination_id === destination_id)) throw failure;
+    }
+  } catch(e) { if (currentUser === user) toast(e.message,'error'); }
+  finally {
+    delete form.dataset.saving;
+    if (form.isConnected) updateServiceSubscriptionButton();
+  }
 }
 async function cancelServiceSubscription(subscription) {
   if(!isAdmin())return;
